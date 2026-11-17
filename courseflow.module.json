@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "qlteacher",
   "name": "山东省教师教育网",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "moduleApi": 1,
   "engines": {
     "framework": ">=0.1.13 <0.2.0"
@@ -33,8 +33,7 @@
     "unit_kinds": [
       "video",
       "document",
-      "reading",
-      "empty"
+      "reading"
     ],
     "max_speed": 1.5,
     "keepalive_seconds": 300,

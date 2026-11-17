@@ -138,8 +138,6 @@ export class QLTeacherFixture {
         return { courses: [COURSE_A, COURSE_B] };
       case 'catalog.units': {
         if (!course?.id) throw invalid('缺少课程');
-        const submitted = await this.submitted(session, course);
-        const auto = this.settings.auto_finish_exams !== false;
         return {
           units: [
             {
@@ -168,22 +166,6 @@ export class QLTeacherFixture {
               video_id: null,
               selectable: true,
             },
-            {
-              id: 'fixture-exam',
-              name: '离线课程测验',
-              chapter_id: 'fixture-chapter-1',
-              chapter_name: '离线第一章',
-              lesson_id: String(course.id),
-              kind: 'empty',
-              duration_seconds: 0,
-              watched_seconds: 0,
-              state: submitted ? 'completed' : 'not_started',
-              video_id: null,
-              selectable: auto,
-              ...(auto
-                ? { selectable_note: '自动作答（使用工作台模型）' }
-                : { selectable_note: '请在「课程测验」中完成' }),
-            },
           ],
         };
       }
@@ -209,9 +191,6 @@ export class QLTeacherFixture {
         if (!unit?.id) throw invalid('缺少单元');
         const isExam = unit.id === 'fixture-exam' || unit.kind === 'empty';
         if (isExam) {
-          if (this.settings.auto_finish_exams === false) {
-            return { status: 'blocked', reason: '离线样例已关闭课程测验自动完成', checkpoint: params.checkpoint ?? null };
-          }
           const submitted = await this.submitted(session, course);
           if (submitted) {
             return {

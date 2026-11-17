@@ -283,13 +283,8 @@ export class QLTeacherModule {
       return this.reviewStep(state, unit, checkpoint, options);
     }
     if (type === 'exam') {
-      if (this.settings.auto_finish_exams === false) {
-        return {
-          status: 'blocked',
-          reason: '课程测验自动完成已关闭，请在「课程测验」页签中完成',
-          checkpoint: params.checkpoint ?? null,
-        };
-      }
+      // Kept for checkpoints created before exams were removed from the study
+      // directory. New catalogs never expose exam units here.
       return this.studyExamStep(session, course, state, checkpoint, options);
     }
     if (type === 'homework' || type === 'assignment') {

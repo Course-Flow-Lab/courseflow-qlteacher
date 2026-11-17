@@ -499,7 +499,7 @@ test('a failed re-login is not masked by an old token in state', async () => {
   }
 });
 
-test('catalog maps lessons, chapters, activity kinds and exam selectability', async () => {
+test('catalog maps lessons and chapters but keeps exercises out of the study directory', async () => {
   const platform = makePlatform();
   const h = await startHarness({ settings: { project_id: 'cz2026' }, fetch: makeHandler(platform) });
   try {
@@ -513,11 +513,11 @@ test('catalog maps lessons, chapters, activity kinds and exam selectability', as
     const byId = new Map(units.map(unit => [unit.id, unit]));
     assert.equal(byId.get('video-1').kind, 'video');
     assert.equal(byId.get('doc-1').kind, 'document');
-    assert.equal(byId.get('exam-1').kind, 'empty');
-    assert.equal(byId.get('exam-1').selectable, true);
-    assert.match(byId.get('exam-1').selectable_note, /自动作答/);
-    assert.equal(byId.get('link-1').selectable, false);
-    assert.equal(byId.get('extra-1').selectable, false);
+    assert.equal(byId.get('resource-1').kind, 'document');
+    assert.equal(byId.has('exam-1'), false);
+    assert.equal(byId.has('link-1'), false);
+    assert.equal(byId.has('extra-1'), false);
+    assert.equal(units.every(unit => ['video', 'document', 'reading'].includes(unit.kind)), true);
     assert.equal(byId.get('video-1').chapter_name, '第一章');
     assert.equal(byId.get('video-1').duration_seconds, 120);
     assert.equal(byId.get('video-1').state, 'in_progress');
@@ -776,7 +776,7 @@ test('exam opens, drafts locally, submits real platform answers and reads back c
   }
 });
 
-test('a course-exam unit in study asks the framework for answers, submits and reads back', async () => {
+test('a directly supplied legacy exam unit still asks for answers, submits and reads back', async () => {
   const platform = makePlatform();
   const h = await startHarness({ settings: { project_id: 'cz2026' }, fetch: makeHandler(platform) });
   try {
@@ -784,8 +784,20 @@ test('a course-exam unit in study asks the framework for answers, submits and re
     const { courses } = await h.call('catalog.courses', { session });
     const course = courses[0];
     const { units } = await h.call('catalog.units', { session, course });
-    const exam = units.find(item => item.id === 'exam-1');
-    assert.equal(exam.selectable, true);
+    assert.equal(units.some(item => item.id === 'exam-1'), false);
+    const exam = {
+      id: 'exam-1',
+      name: '第一章测验',
+      chapter_id: 'section-1',
+      chapter_name: '第一章',
+      lesson_id: String(course.id),
+      kind: 'empty',
+      duration_seconds: null,
+      watched_seconds: 0,
+      state: 'not_started',
+      video_id: null,
+      selectable: true,
+    };
     const options = { operation: 'study', execution_id: 'task/exam-study' };
     const needsAi = await h.call('study.step', {
       session, course, unit: exam, checkpoint: null, options,
@@ -819,7 +831,7 @@ test('a course-exam unit in study asks the framework for answers, submits and re
   }
 });
 
-test('fixture source autocompletes units and exam with no network writes', async () => {
+test('fixture source autocompletes playable units and exam via the answer API with no network writes', async () => {
   const h = await startHarness({
     settings: { source: 'fixture' },
     fetch: () => { throw new Error('fixture source must not call cw.net.fetch'); },
@@ -841,10 +853,9 @@ test('fixture source autocompletes units and exam with no network writes', async
     assert.equal(courses.length, 2);
     const course = courses[0];
     const { units } = await h.call('catalog.units', { session: 's_fixture', course });
-    assert.equal(units.length, 3);
+    assert.equal(units.length, 2);
+    assert.equal(units.some(unit => unit.id === 'fixture-exam'), false);
     const video = units.find(unit => unit.id === 'fixture-video');
-    const exam = units.find(unit => unit.id === 'fixture-exam');
-    assert.equal(exam.selectable, true);
     const options = { operation: 'study', execution_id: 'fixture/1' };
     const videoResult = await h.call('study.step', {
       session: 's_fixture', course, unit: video, checkpoint: null, options,
@@ -852,20 +863,24 @@ test('fixture source autocompletes units and exam with no network writes', async
     assert.equal(videoResult.status, 'completed');
     assert.equal(videoResult.evidence.fixture, true);
 
-    const examNeedsAi = await h.call('study.step', {
-      session: 's_fixture', course, unit: exam, checkpoint: null, options,
+    const { papers } = await h.call('catalog.papers', { session: 's_fixture', course });
+    assert.equal(papers[0].done, false);
+    const opened = await h.call('exam.open', {
+      session: 's_fixture', course, paper_id: papers[0].id, request_id: 'fixture/exam',
     });
-    assert.equal(examNeedsAi.status, 'needs_ai');
-    const examDone = await h.call('study.step', {
+    assert.equal(opened.ready, true);
+    await h.call('exam.write', {
       session: 's_fixture',
       course,
-      unit: exam,
-      checkpoint: examNeedsAi.checkpoint,
-      options: { ...options, interaction_answers: { 'fixture-q1': ['A'] } },
+      attempt_id: opened.attempt.id,
+      answers: { 'fixture-q1': ['A'] },
+      phase: 'submit',
     });
-    assert.equal(examDone.status, 'completed');
-    const { papers } = await h.call('catalog.papers', { session: 's_fixture', course });
-    assert.equal(papers[0].done, true);
+    const readback = await h.call('exam.readback', {
+      session: 's_fixture', course, attempt_id: opened.attempt.id,
+    });
+    assert.equal(readback.confirmed, true);
+    assert.equal((await h.call('catalog.papers', { session: 's_fixture', course })).papers[0].done, true);
     assert.equal(h.fetchCalls.length, 0);
   } finally {
     await h.close();

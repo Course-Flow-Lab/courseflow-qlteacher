@@ -39,7 +39,8 @@ const KINDS = {
 };
 
 const EXAM_TYPES = new Set(['exam']);
-const UNSUPPORTED_TYPES = new Set(['homework', 'assignment']);
+// The study directory only contains activities the module can actually play/advance.
+const AUTO_CONTENT_TYPES = new Set(['video', 'teletext', 'txt', 'doc', 'resource']);
 
 export class LoginFailure extends Error {
   constructor(message, code = 0) {
@@ -73,7 +74,6 @@ export function normalizeSettings(raw) {
     course_cache_seconds: number(source.course_cache_seconds, 900, 60, 3600),
     request_timeout_ms: number(source.request_timeout_ms, 12_000, 5_000, 25_000),
     study_verify_attempts: number(source.study_verify_attempts, 6, 2, 20),
-    auto_finish_exams: source.auto_finish_exams !== false,
   };
 }
 
@@ -726,11 +726,10 @@ export class QLTeacherClient {
     for (const { section, activity, type } of collectActivities(info.data)) {
       const id = String(activity?.id ?? '');
       if (!id || seen.has(id)) continue;
-      seen.add(id);
+      if (section?.extendedResource === true) continue;
+      if (!AUTO_CONTENT_TYPES.has(type)) continue;
+      if (type === 'resource' && !asList(activity?.ext?.resourceItems).length) continue;
       const kind = KINDS[type] ?? 'reading';
-      const extended = section?.extendedResource === true;
-      const supported = ['video', 'teletext', 'txt', 'doc', 'resource', 'link'].includes(type);
-      const exam = EXAM_TYPES.has(type);
       const duration = numberOrNull(activity?.ext?.studyTime)
         ?? numberOrNull(activity?.standard)
         ?? numberOrNull(activity?.length)
@@ -738,30 +737,8 @@ export class QLTeacherClient {
       const watched = activityFinished(info.data, activity) && duration > 0
         ? duration
         : activityProgress(activity);
-      let selectable = supported && !extended;
-      let note = activity?.mustLearn === 1 ? '' : (supported ? '选修内容' : '');
-      if (exam) {
-        selectable = this.settings.auto_finish_exams !== false && !extended;
-        note = selectable
-          ? '课程测验，自动作答（使用工作台模型）'
-          : extended
-            ? '扩展资源，不计入课程学习'
-            : '课程测验，请在「课程测验」中完成';
-      } else if (extended) {
-        selectable = false;
-        note = '扩展资源，不计入课程学习';
-      } else if (UNSUPPORTED_TYPES.has(type)) {
-        selectable = false;
-        note = '平台作业/考试，请在官方页面完成';
-      } else if (!supported) {
-        selectable = false;
-        note = '暂不支持的学习活动类型';
-      } else if (type === 'resource' || type === 'link') {
-        if (!duration && activity?.mustLearn !== 1) {
-          selectable = false;
-          note = '平台未提供可核验的学习时长';
-        }
-      }
+      const note = activity?.mustLearn === 1 ? '' : '选修内容';
+      seen.add(id);
       units.push({
         id,
         name: String(activity?.title ?? activity?.name ?? id),
@@ -773,7 +750,7 @@ export class QLTeacherClient {
         watched_seconds: watched,
         state: activityStatus(info.data, activity),
         video_id: type === 'video' ? id : null,
-        selectable,
+        selectable: true,
         ...(note ? { selectable_note: note } : {}),
       });
     }

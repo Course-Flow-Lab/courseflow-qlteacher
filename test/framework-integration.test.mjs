@@ -19,10 +19,7 @@ test(
     t.after(async () => runtime.close());
 
     runtime.manager.install(moduleRoot);
-    runtime.manager.configure('qlteacher', {
-      source: 'fixture',
-      auto_finish_exams: true,
-    });
+    runtime.manager.configure('qlteacher', { source: 'fixture' });
 
     const session = await setupAdmin(runtime);
     const login = await call(runtime, {
@@ -52,8 +49,8 @@ test(
     const course = courses.find(item => item.id === 'fixture-course');
     const courseRoot = `/api/platforms/qlteacher/courses/${encodeURIComponent(course.id)}/${encodeURIComponent(course.recruit_id)}`;
     const units = (await call(runtime, { url: `${courseRoot}/units`, session })).body.units;
-    assert.equal(units.length, 3);
-    assert.equal(units.find(unit => unit.id === 'fixture-exam').selectable, true);
+    assert.equal(units.length, 2);
+    assert.deepEqual(units.map(unit => unit.id).sort(), ['fixture-reading', 'fixture-video']);
 
     let generations = 0;
     runtime.ai.generate = async () => {
@@ -70,8 +67,8 @@ test(
     assert.equal(study.status, 200, JSON.stringify(study.body));
     const studyTask = await waitFor(runtime, session, study.body.task.id, 'completed', 20_000);
     assert.equal(studyTask.progress, 100);
-    assert.ok((studyTask.completed ?? []).includes('fixture-exam'));
-    assert.equal(generations, 0, 'the no-op course exam uses its published fixture answer, not the LLM');
+    assert.deepEqual((studyTask.completed ?? []).sort(), ['fixture-reading', 'fixture-video']);
+    assert.equal(generations, 0, 'the playable fixture course does not need the LLM');
 
     const second = courses.find(item => item.id === 'fixture-course-exam');
     const secondRoot = `/api/platforms/qlteacher/courses/${encodeURIComponent(second.id)}/${encodeURIComponent(second.recruit_id)}`;
