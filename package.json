@@ -8,5 +8,14 @@
     "test": "node --test test/*.test.mjs",
     "live": "node scripts/live-smoke.mjs",
     "test:fixture": "node --test test/framework-integration.test.mjs"
-  }
+  },
+  "files": [
+    "courseflow.module.json",
+    "index.mjs",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ]
 }
