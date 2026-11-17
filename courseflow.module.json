@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "id": "qlteacher",
+  "name": "山东省教师教育网",
+  "version": "0.1.0",
+  "moduleApi": 1,
+  "engines": {
+    "framework": ">=0.1.13 <0.2.0"
+  },
+  "runtime": {
+    "engine": "node",
+    "entry": "index.mjs",
+    "files": [
+      "src",
+      "docs",
+      "README.md",
+      "LICENSE",
+      "NOTICE.md"
+    ]
+  },
+  "platform": {
+    "id": "qlteacher",
+    "name": "山东省教师教育网",
+    "short": "QLTeacher",
+    "login": [
+      "password"
+    ],
+    "operations": [
+      "study",
+      "trial",
+      "answer"
+    ],
+    "unit_kinds": [
+      "video",
+      "document",
+      "reading",
+      "empty"
+    ],
+    "max_speed": 1.5,
+    "keepalive_seconds": 300,
+    "presentation": {
+      "tabs": [
+        {
+          "id": "study",
+          "label": "课程学习"
+        },
+        {
+          "id": "answer",
+          "label": "课程测验"
+        },
+        {
+          "id": "records",
+          "label": "执行记录"
+        }
+      ],
+      "actions": [
+        {
+          "id": "trial",
+          "label": "短时试跑"
+        }
+      ]
+    }
+  },
+  "permissions": {
+    "network": [
+      "qlteacher.com",
+      "*.qlteacher.com"
+    ],
+    "browser": false,
+    "ai": false,
+    "question_bank": true,
+    "storage": "module"
+  }
+}
