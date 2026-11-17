@@ -1,0 +1,48 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  module:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: courseflow-qlteacher
+          persist-credentials: false
+      - name: Check out the minimum supported Framework release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: Course-Flow-Lab/courseflow-framework
+          ref: 9f81336a59a623f147092e4771078f897567faf5 # v0.1.13
+          path: courseflow-framework
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Framework dependencies
+        working-directory: courseflow-framework
+        run: npm ci
+      - name: Pack the module for the integration test
+        working-directory: courseflow-qlteacher
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          import path from 'node:path';
+          const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', process.env.RUNNER_TEMP], { encoding: 'utf8' }));
+          const artifact = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
+          appendFileSync(process.env.GITHUB_ENV, `QLTEACHER_MODULE_PACKAGE=${path.join(process.env.RUNNER_TEMP, artifact.filename)}\n`);
+          JS
+      - name: Test RPC, platform fixtures and real Framework archive installation
+        working-directory: courseflow-qlteacher
+        run: npm test

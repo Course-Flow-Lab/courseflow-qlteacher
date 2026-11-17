@@ -117,6 +117,7 @@ function envelopeData(value) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || typeof value === 'string' && !value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -148,14 +149,11 @@ function optionTruth(option) {
 function truthFromAnswer(answer, options) {
   const first = answerList(answer)[0];
   if (!first) return [];
-  const direct = boolFromTruth(first);
-  if (direct) return [direct];
   const option = (options || []).find(item => String(item.id) === String(first));
   const mapped = option ? optionTruth(option) : '';
   if (mapped) return [mapped];
-  if (option && (options || []).some(optionCorrect)) {
-    return [optionCorrect(option) ? 'true' : 'false'];
-  }
+  const direct = boolFromTruth(first);
+  if (direct) return [direct];
   return [];
 }
 
@@ -164,22 +162,6 @@ function judgeOptions(options) {
   for (const option of options || []) {
     const truth = optionTruth(option);
     if (truth && !mapping[truth]) mapping[truth] = String(option.id);
-  }
-  const right = (options || []).find(optionCorrect);
-  if (right) {
-    if (!mapping.true) mapping.true = String(right.id);
-    if (!mapping.false) {
-      const other = (options || []).find(option => String(option?.id ?? '') !== String(right.id));
-      if (other) mapping.false = String(other.id);
-    }
-  }
-  if (!mapping.true || !mapping.false) {
-    for (const option of options || []) {
-      if (mapping.true && mapping.false) break;
-      const id = String(option?.id ?? '');
-      const truth = boolFromTruth(id);
-      if (truth && !mapping[truth]) mapping[truth] = id;
-    }
   }
   return mapping;
 }
@@ -901,17 +883,22 @@ export class QLTeacherClient {
     let publicOptions = options;
     let answer = [];
     let correct = [];
-    const judgeMap = kind === 'judge' ? judgeOptions(optionsRaw) : {};
+    // Resolve FastDFS/HTML labels before interpreting truth. A correct-answer
+    // flag identifies the answer to the question, not the option meaning "true".
+    const judgeMap = kind === 'judge' ? judgeOptions(options) : {};
     if (kind === 'judge') {
+      if (!judgeMap.true || !judgeMap.false || judgeMap.true === judgeMap.false) {
+        throw protocolChanged('判断题正确/错误选项无法区分，请到官方页面核对');
+      }
       publicOptions = [
         { id: 'true', text: '正确' },
         { id: 'false', text: '错误' },
       ];
-      answer = truthFromAnswer(userAnswer?.answer, optionsRaw);
+      answer = truthFromAnswer(userAnswer?.answer, options);
       const right = allowCorrect ? correctAnswer(raw, optionsRaw, userAnswer) : [];
-      correct = truthFromAnswer(right, optionsRaw);
+      correct = truthFromAnswer(right, options);
       if (submitAnswer?.length) {
-        const submitted = truthFromAnswer(submitAnswer, optionsRaw);
+        const submitted = truthFromAnswer(submitAnswer, options);
         if (submitted.length) answer = submitted;
       }
     } else {
@@ -923,7 +910,7 @@ export class QLTeacherClient {
     }
 
     let explanation = allowCorrect ? htmlToText(raw?.answerDesc ?? raw?.explanation ?? '') : '';
-    if (allowCorrect && !explanation && raw?.answerDesc
+    if (allowCorrect && raw?.answerDesc
       && (String(raw?.ext?.answerDescType ?? '').toLowerCase() === 'fastdfs' || looksLikeFastdfsPath(raw.answerDesc))) {
       try {
         explanation = htmlToText(await this.getText(session, String(raw.answerDesc)));
@@ -985,7 +972,8 @@ export class QLTeacherClient {
         if (values.length) question.correct_answer = values;
       }
       if (response?.rightAnswer && question.kind === 'judge') {
-        const truth = truthFromAnswer(answerList(response.rightAnswer), item.options);
+        const resolved = Object.entries(question._judge_map).map(([text, id]) => ({ id, text }));
+        const truth = truthFromAnswer(response.rightAnswer, resolved);
         if (truth.length) question.correct_answer = truth.slice(0, 1);
       }
       questions.push(question);
@@ -1099,11 +1087,34 @@ export class QLTeacherClient {
     await this.stateSet(EXAM_NAMESPACE, `submit:${attemptId}`, value, session);
   }
 
+  matchesCourse(stored, course) {
+    return stored.course_id === String(course?.id ?? '')
+      && stored.recruit_id === String(course?.recruit_id || this.settings.project_id);
+  }
+
+  async attemptId(session, course, paperId) {
+    const legacy = `${String(course.id)}:${String(paperId)}`;
+    const stored = await this.loadAttempt(session, legacy);
+    // Preserve existing intent locks and task checkpoints from <=0.2.2, but
+    // never reuse them for a different project with the same lesson/paper IDs.
+    if (stored && this.matchesCourse(stored, course)) return legacy;
+    return [course.recruit_id || this.settings.project_id, course.id, paperId].map(value => encodeURIComponent(String(value))).join(':');
+  }
+
   buildPlatformAnswers(attempt, answers) {
     const rows = [];
     for (const question of attempt.questions) {
+      if (!['single', 'multiple', 'judge'].includes(question.kind)) {
+        throw unsupported('测验包含暂不支持的题型，请在官方页面完成');
+      }
       const values = answerList(answers?.[question.id]);
       if (!values.length) throw invalid(`题目 ${question.id} 尚未作答`);
+      if (new Set(values).size !== values.length || question.kind !== 'multiple' && values.length !== 1) {
+        throw invalid(`题目 ${question.id} 的答案数量不正确`);
+      }
+      if (question.kind !== 'judge' && values.some(value => !question.options?.some(option => option.id === value))) {
+        throw invalid(`题目 ${question.id} 包含无效的选项`);
+      }
       let answer;
       if (question.kind === 'judge') {
         const truth = boolFromTruth(values[0]);
@@ -1139,7 +1150,7 @@ export class QLTeacherClient {
         question.correct_answer ||= known;
       }
     }
-    const attemptId = `${String(course.id)}:${String(paperId)}`;
+    const attemptId = await this.attemptId(session, course, paperId);
     const attempt = {
       id: attemptId,
       paper_id: String(paperId),
@@ -1149,7 +1160,7 @@ export class QLTeacherClient {
     };
     await this.saveAttempt(session, attemptId, {
       course_id: String(course.id),
-      recruit_id: String(course.recruit_id),
+      recruit_id: String(course.recruit_id || this.settings.project_id),
       paper_id: String(paperId),
       activity_id: String(paperId),
       token: state.info.token,
@@ -1164,6 +1175,7 @@ export class QLTeacherClient {
   async readbackExam(session, course, attemptId) {
     const stored = await this.loadAttempt(session, attemptId);
     if (!stored) throw invalid('找不到本次作答记录，请重新打开试卷');
+    if (!this.matchesCourse(stored, course)) throw invalid('作答记录不属于当前课程或研修项目');
     const submit = await this.loadSubmit(session, attemptId);
     const state = await this.getActivity(session, course, stored.activity_id, { forceCourse: false });
     const items = asList(state.activity?.ext?.examItems);

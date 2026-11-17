@@ -87,6 +87,7 @@ export class QLTeacherModule {
       ? new QLTeacherFixture({ host, settings: this.settings })
       : null;
     this.challenges = new Map();
+    this.submitting = new Set();
   }
 
   async dispatch(method, params) {
@@ -282,6 +283,13 @@ export class QLTeacherModule {
     if (operation === 'review') {
       return this.reviewStep(state, unit, checkpoint, options);
     }
+    if (operation === 'trial' && !SUPPORTED_STUDY_TYPES.has(type)) {
+      return {
+        status: 'blocked',
+        reason: '该活动不支持短时试跑，请选择视频、图文或文档',
+        checkpoint: params.checkpoint ?? null,
+      };
+    }
     if (type === 'exam') {
       // Kept for checkpoints created before exams were removed from the study
       // directory. New catalogs never expose exam units here.
@@ -354,7 +362,7 @@ export class QLTeacherModule {
 
   async studyExamStep(session, course, state, checkpoint, options) {
     const paperId = String(state.activity.id);
-    const attemptId = `${String(course.id)}:${paperId}`;
+    const attemptId = await this.client.attemptId(session, course, paperId);
     const previousSubmit = await this.client.loadSubmit(session, attemptId);
     let attempt;
     if (previousSubmit && ['pending', 'unknown', 'submitted'].includes(previousSubmit.state)) {
@@ -563,13 +571,16 @@ export class QLTeacherModule {
     const speed = speedFactor(options);
     const trial = operation === 'trial';
     const limit = Math.floor(clamp(options.limit_seconds ?? 60, 1, 180));
-    const requestedTarget = trial ? Math.min(required, current + limit) : required;
+    const requestedTarget = trial
+      ? Number.isFinite(checkpoint.trial_target_seconds) ? checkpoint.trial_target_seconds : current + limit
+      : required;
     // QLTeacher rejects duration writes at exactly the study-time threshold. The
     // player sends -1 for completion instead, and trial must stop before that
     // threshold so it can never accidentally finish the platform unit.
     const target = trial
       ? Math.max(current, Math.min(requestedTarget, required - 1))
       : requestedTarget;
+    if (trial) checkpoint = { ...checkpoint, trial_target_seconds: target };
     const verifyAttempts = Math.max(0, Math.floor(Number(checkpoint.verify_attempts) || 0));
 
     const finish = async lastCurrent => {
@@ -853,10 +864,23 @@ export class QLTeacherModule {
     if (!session || !attemptId) throw invalid('交卷参数不完整');
     const stored = await this.client.loadAttempt(session, attemptId);
     if (!stored) throw invalid('找不到本次作答记录，请重新打开试卷');
+    if (!this.client.matchesCourse(stored, params.course)) throw invalid('作答记录不属于当前课程或研修项目');
     if (phase === 'draft') {
       return { done: true, cursor: 0, draft_supported: false };
     }
     if (phase !== 'submit') throw invalid('phase 只能是 draft 或 submit');
+    const auth = await this.client.ensureAuth(session);
+    const key = JSON.stringify([auth.account_raw, attemptId]);
+    if (this.submitting.has(key)) throw rejected('本次交卷请求已记录，不能重复提交；请使用回读确认结果');
+    this.submitting.add(key);
+    try {
+      return await this.submitAttempt(session, attemptId, stored, answers);
+    } finally {
+      this.submitting.delete(key);
+    }
+  }
+
+  async submitAttempt(session, attemptId, stored, answers) {
     const previous = await this.client.loadSubmit(session, attemptId);
     if (previous && ['pending', 'unknown', 'submitted'].includes(previous.state)) {
       throw rejected('本次交卷请求已记录，不能重复提交；请使用回读确认结果');

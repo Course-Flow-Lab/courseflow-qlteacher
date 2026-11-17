@@ -4,6 +4,10 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 
 这是一个独立模块仓库，不修改 `courseflow-framework` 或 `courseflow-webui`，只实现模块 API v1。
 
+运行要求：Courseflow Framework **0.1.13 或更新的 0.1.x 版本**、Node.js **24+**。当前版本为 **0.2.3**，没有 npm 运行时依赖。
+
+下载：[GitHub Releases](https://github.com/Course-Flow-Lab/courseflow-qlteacher/releases/latest) · [统一模块下载页](https://course-flow-lab.github.io/courseflow-docker/) · [更新记录](CHANGELOG.md)。
+
 ## 已实现
 
 | 能力 | 说明 |
@@ -12,7 +16,7 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 | 登录保活 | access token 临近过期时用 refresh token 刷新；框架每 5 分钟调用一次 `auth.keepalive` |
 | 课程列表 | 读取 `project_id` / `project_ids` 下的 `lessons/my`，按学习专题展开课程 |
 | 课程目录 | 读取播放器课程结构，映射章节、视频、图文、文档、资源、链接、测验 |
-| 自动学习 | 视频 / 图文 / 文档 / 链接按真实时间推进，支持框架的 `speedup`（最高 1.5 倍） |
+| 自动学习 | 视频 / 图文 / 文档按真实时间推进，支持框架的 `speedup`（最高 1.5 倍） |
 | 资源活动 | 逐个打开资源条目并回读完成状态 |
 | 视频弹题 | 平台下发正确答案时直接使用；没有答案时返回 `needs_ai`，交给工作台模型或人工补答 |
 | 学习目录过滤 | 只保留可自动播放/推进的视频、图文、文档和可打开资源；测验、作业、扩展资源及链接不进入目录 |
@@ -60,21 +64,35 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 
 ## 安装与连接
 
-1. 在 Courseflow 管理界面的「平台模块」中安装本目录（目录内包含 `courseflow.module.json`、`index.mjs` 和 `src/`）。
+从 Release 或统一下载页下载 `.tgz` 及同名 `.sha256`，在同一目录执行 `sha256sum -c 文件名.tgz.sha256`。Docker 用户安装校验通过的包：
+
+```sh
+./scripts/courseflow module install /绝对路径/courseflow-qlteacher-版本-node24-提交.tgz
+```
+
+独立 Framework 用户先停止使用同一数据目录的服务，保留原有 `CF_DATA_DIR`，再执行：
+
+```sh
+npm run cli -- module add /绝对路径/courseflow-qlteacher-版本-node24-提交.tgz
+```
+
+恢复服务后：
+
+1. 在 Courseflow 管理界面的「平台模块」中确认 QLTeacher 的版本和状态。开发时也可安装本源码目录（包含 `courseflow.module.json`、`index.mjs` 和 `src/`）。
 2. 在「平台连接」中添加 QLTeacher 账号，输入山东省教师教育网账号和密码。
 3. 如果平台要求短信、滑块或额外安全验证，模块会返回登录失败。请先在官方网页完成验证或改用平台支持的登录方式；本模块不会绕过验证码。
 4. 登录后即可在课程工作台查看课程目录、创建学习和测验任务。
 
-运行环境只需要 Node.js（框架已经要求）。模块没有 npm 运行时依赖。
+模块默认使用真实平台（`source: live`），研修项目编号必须与账号实际项目一致。升级前先备份站点；模块版本变化后，旧任务可能需要重新创建。完整备份和回退步骤见 [模块安装手册](https://github.com/Course-Flow-Lab/courseflow-docker/blob/main/docs/modules.md)。
 
 ## 学习与测验行为
 
-- 学习步骤使用平台播放器的 `duration/video|doc|txt|link` 接口。首次步骤先等待一个学习块，随后每块落盘一次；暂停期间不会计入学习时间。
+- 学习步骤使用平台播放器的 `duration/video|doc|txt` 接口。首次步骤先等待一个学习块，随后每块落盘一次；暂停期间不会计入学习时间。
 - `speedup` 只会缩短等待时间，保存的课程秒数仍是真实学习秒数，最多 1.5 倍。
-- `trial`（短时试跑）只推进指定秒数，不会把课程标记为平台完成。
+- `trial`（短时试跑）只推进视频、图文或文档的指定秒数，暂停恢复后仍保留原结束位置；资源和测验不支持试跑。试跑不会发送平台完成请求。
 - 学习目录不会包含测验、作业、扩展资源、暂不支持的活动或链接；这些内容不会进入自动学习任务。
 - 课程测验没有草稿接口，因此 `exam.write` 的 `draft` 阶段只在本地返回 `draft_supported:false`，不会发请求。只有确认交卷或勾选自动提交后才会调用平台 `POST /test`。
-- 交卷前先把意图写入加密状态；请求结果未知时只允许回读，不会自动重发。
+- 交卷前校验题型、选项和答案数量，再把意图写入加密状态；并发请求不会重复交卷，请求结果未知时只允许回读，不会自动重发。
 - 回读以 `GET activity` 的平台状态为准，返回原始 `attempt_id`。确认后才写入题库和任务完成状态。
 - QLTeacher 的学习活动存在互斥（同一账号不能同时学习多个活动）。遇到 `learnMultiAct` 时任务会暂停，不会并发重试。
 
@@ -90,6 +108,8 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 ### FastDFS 题干与选项
 
 QLTeacher 的一些题目和选项只返回 FastDFS 路径。模块会根据题目的 `ext.titleType` 和路径形态，通过 `downloadres.qlteacher.com` 读取正文。题目为 FastDFS 时，所有选项都会按播放器的行为取正文。读取失败会暂停任务，不会把 `.txt` 路径交给模型。
+
+判断题用读取后的选项文字区分“正确 / 错误”，不把“该选项是正确答案”当作“该选项表示正确”。选项含义无法确定时暂停处理。作答记录按研修项目和课程隔离，避免不同项目使用相同课程编号时相互覆盖。
 
 ## 暂不支持
 
@@ -112,7 +132,7 @@ QLTeacher 的一些题目和选项只返回 FastDFS 路径。模块会根据题�
 - `catalog.papers` / `exam.*` 可用于单独测试自动交卷和回读；
 - 所有 `cw.net.fetch` 调用为零，不会产生平台写入台账。
 
-框架源码位于相邻的 `../courseflow-framework` 时，`npm test` 会运行真实框架集成测试：安装本模块、使用 fixture 账号无模型自动完成一门课程，再用假模型自动提交一份独立测验，并断言 `write_ledger` 为 0。单独克隆本模块时该测试会跳过。也可以只运行这条集成测试：
+框架源码位于相邻的 `../courseflow-framework` 且已安装依赖时，`npm test` 会运行真实框架集成测试：安装本模块、使用 fixture 账号无模型自动完成一门课程，再用假模型自动提交一份独立测验，并断言 `write_ledger` 为 0。单独克隆本模块时该测试会跳过。GitHub CI 会检出固定的 Framework 0.1.13 并安装实际 `.tgz` 包，执行这项集成测试。也可以只运行这条集成测试：
 
 ```bash
 npm run test:fixture

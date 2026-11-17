@@ -1,9 +1,20 @@
 {
   "name": "courseflow-qlteacher",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "Courseflow platform module for 山东省教师教育网 / QLTeacher",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Course-Flow-Lab/courseflow-qlteacher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Course-Flow-Lab/courseflow-qlteacher/issues"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "live": "node scripts/live-smoke.mjs",
@@ -15,6 +26,7 @@
     "src",
     "docs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE.md"
   ]

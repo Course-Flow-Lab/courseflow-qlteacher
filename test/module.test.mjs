@@ -629,6 +629,53 @@ test('trial advances only the requested window and never finishes the platform u
   }
 });
 
+test('a multi-step trial retains its original endpoint across a pause and resume', async () => {
+  const platform = makePlatform();
+  const h = await startHarness({ settings: { chunk_seconds: 10 }, fetch: makeHandler(platform) });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const { units } = await h.call('catalog.units', { session, course });
+    const unit = units.find(item => item.id === 'video-1');
+    const options = { operation: 'trial', execution_id: 'trial/1', limit_seconds: 30 };
+    let result = await h.call('study.step', { session, course, unit, options });
+    h.advance(10);
+    result = await h.call('study.step', { session, course, unit, options, checkpoint: result.checkpoint });
+    assert.equal(platform.videoProgress, 40);
+    h.advance(600);
+    options.execution_id = 'trial/2';
+    result = await h.call('study.step', { session, course, unit, options, checkpoint: result.checkpoint });
+    assert.equal(platform.videoProgress, 40, 'a resumed execution must first wait again');
+    for (let i = 0; i < 2; i++) {
+      h.advance(result.wait_ms / 1000);
+      result = await h.call('study.step', { session, course, unit, options, checkpoint: result.checkpoint });
+    }
+    assert.equal(result.status, 'completed');
+    assert.equal(result.evidence.trial, true);
+    assert.equal(platform.videoProgress, 60);
+    assert.equal(platform.videoFinished, false);
+  } finally {
+    await h.close();
+  }
+});
+
+test('trial refuses resource and legacy exam activities without writing platform completion', async () => {
+  const h = await startHarness({ fetch: makeHandler(makePlatform()) });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    for (const id of ['resource-1', 'exam-1']) {
+      const result = await h.call('study.step', {
+        session, course, unit: { id, state: 'not_started' }, options: { operation: 'trial', execution_id: 'trial/1' },
+      });
+      assert.equal(result.status, 'blocked');
+    }
+    assert.equal(h.fetchCalls.some(request => request.commit), false);
+  } finally {
+    await h.close();
+  }
+});
+
 test('review spends the requested time without writing platform progress', async () => {
   const platform = makePlatform();
   const h = await startHarness({ settings: { project_id: 'cz2026', chunk_seconds: 60 }, fetch: makeHandler(platform) });
@@ -900,6 +947,92 @@ test('fixture source autocompletes playable units and exam via the answer API wi
     assert.equal(readback.confirmed, true);
     assert.equal((await h.call('catalog.papers', { session: 's_fixture', course })).papers[0].done, true);
     assert.equal(h.fetchCalls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test('identical lesson and paper IDs in different projects use separate attempts', async () => {
+  const h = await startHarness({ fetch: makeHandler(makePlatform()) });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const other = { ...course, recruit_id: 'other-project' };
+    const first = await h.call('exam.open', { session, course, paper_id: 'exam-1' });
+    const second = await h.call('exam.open', { session, course: other, paper_id: 'exam-1' });
+    assert.notEqual(first.attempt.id, second.attempt.id);
+    await assert.rejects(h.call('exam.readback', { session, course: other, attempt_id: first.attempt.id }), { code: 'invalid_params' });
+    await assert.rejects(h.call('exam.write', {
+      session, course: other, attempt_id: first.attempt.id, phase: 'submit',
+      answers: { q1: ['b'], q2: ['a', 'c'], q3: ['true'] },
+    }), { code: 'invalid_params' });
+    assert.equal(h.fetchCalls.some(request => request.commit), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test('legacy pending submissions keep their attempt ID and cannot be resubmitted after upgrade', async () => {
+  const h = await startHarness({ fetch: makeHandler(makePlatform()) });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const first = await h.call('exam.open', { session, course, paper_id: 'exam-1' });
+    const oldId = `${course.id}:exam-1`;
+    const snapshot = h.state.get(`exam\u0000attempt:${first.attempt.id}`);
+    h.state.delete(`exam\u0000attempt:${first.attempt.id}`);
+    h.state.set(`exam\u0000attempt:${oldId}`, snapshot);
+    h.state.set(`exam\u0000submit:${oldId}`, { state: 'unknown', activity_id: 'exam-1' });
+    const opened = await h.call('exam.open', { session, course, paper_id: 'exam-1' });
+    assert.equal(opened.attempt.id, oldId);
+    await assert.rejects(h.call('exam.write', {
+      session, course, attempt_id: opened.attempt.id, phase: 'submit',
+      answers: { q1: ['b'], q2: ['a', 'c'], q3: ['true'] },
+    }), { code: 'platform_rejected' });
+    assert.equal((await h.call('exam.readback', { session, course, attempt_id: oldId })).confirmed, false);
+    assert.equal(h.fetchCalls.some(request => request.commit), false);
+  } finally {
+    await h.close();
+  }
+});
+
+test('concurrent requests submit an exam only once', async () => {
+  const base = makeHandler(makePlatform());
+  const h = await startHarness({ fetch: async request => {
+    if (new URL(request.url).pathname.endsWith('/test')) await new Promise(resolve => setTimeout(resolve, 50));
+    return base(request);
+  } });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const { attempt } = await h.call('exam.open', { session, course, paper_id: 'exam-1' });
+    const params = { session, course, attempt_id: attempt.id, answers: { q1: ['b'], q2: ['a', 'c'], q3: ['true'] }, phase: 'submit' };
+    const results = await Promise.allSettled([h.call('exam.write', params), h.call('exam.write', params)]);
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(results.find(result => result.status === 'rejected')?.reason.code, 'platform_rejected');
+    assert.equal(h.fetchCalls.filter(request => new URL(request.url).pathname.endsWith('/test')).length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('an uncertain submission result stays locked until platform readback confirms it', async () => {
+  const base = makeHandler(makePlatform());
+  const h = await startHarness({ fetch: request => {
+    if (new URL(request.url).pathname.endsWith('/test')) {
+      throw Object.assign(new Error('synthetic transport failure'), { code: 'platform_unavailable' });
+    }
+    return base(request);
+  } });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const { attempt } = await h.call('exam.open', { session, course, paper_id: 'exam-1' });
+    const params = { session, course, attempt_id: attempt.id, answers: { q1: ['b'], q2: ['a', 'c'], q3: ['true'] }, phase: 'submit' };
+    await assert.rejects(h.call('exam.write', params), { code: 'platform_unavailable' });
+    assert.equal((await h.call('exam.readback', { session, course, attempt_id: attempt.id })).confirmed, false);
+    await assert.rejects(h.call('exam.write', params), { code: 'platform_rejected' });
+    assert.equal(h.fetchCalls.filter(request => new URL(request.url).pathname.endsWith('/test')).length, 1);
   } finally {
     await h.close();
   }

@@ -176,7 +176,7 @@ Authorization: Bearer <access_token>
 | `teletext` / `txt` | `reading` | 自动学习 |
 | `doc` | `document` | 自动学习 |
 | `resource` | `document` | 逐项打开 |
-| `link` | `reading` | 自动学习（平台提供时长时） |
+| `link` | `reading` | 不进入新学习目录；仅兼容旧检查点 |
 | `exam` | `empty` | 进入课程测验 |
 | `homework` / `assignment` | `empty` | 不支持，需官方页面 |
 
@@ -330,7 +330,9 @@ Content-Type: application/json
 }
 ```
 
-模块把请求意图先写入加密状态；不确定结果只回读，不重发。回读以活动 `status/finishedActs` 为确认依据，并返回原始 `attempt_id`。
+模块把请求意图先写入加密状态；不确定结果只回读，不重发。同一平台账号和作答编号的并发请求也只发送一次。回读以活动 `status/finishedActs` 为确认依据，并返回原始 `attempt_id`。
+
+从 0.2.3 起，新 `attempt_id` 由研修项目、课程、活动三个经过 URL 编码的编号组成，以冒号分隔。同项目的旧版作答快照继续沿用原编号，保留交卷意图锁；不会把旧快照用于另一个项目。
 
 ## 学习目录过滤
 
@@ -348,6 +350,7 @@ Content-Type: application/json
 
 - `Question.kind` 只使用已验证的 `single`/`multiple`/`judge`；其他题型标为 `unsupported`。
 - 判断题公共选项固定为 `true`/`false`，与 Courseflow 的题库格式一致。
+- 判断题映射使用 FastDFS / HTML 清洗后的选项正文，再按明确的选项 ID 作为后备；`right` 标记只用于读答案，不能用于猜选项含义。不能区分“正确 / 错误”时返回协议变化错误。
 - 题干和选项经 HTML 清洗，图片从 `<img src>` 提取并限制在 `*.qlteacher.com`。
 - FastDFS 题干/选项通过 `downloadres.qlteacher.com` 读取原始 HTML。题目 `ext.titleType === "fastdfs"` 时，播放器会读取题干和**每个选项**的正文；选项自身不一定带 `ext.titleType`。模块同时识别 `YYYY/M00/.../file.txt` 或 `group1/M00/...` 路径。读取失败会暂停任务，绝不把资源路径交给模型。
 - 平台没有草稿接口，所以 `exam.write` 的 `draft` 阶段只返回本地 `done` 且 `draft_supported:false`。

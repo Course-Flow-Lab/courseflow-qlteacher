@@ -18,7 +18,7 @@ test(
     const { runtime } = await boot('courseflow-qlteacher-integration-');
     t.after(async () => runtime.close());
 
-    runtime.manager.install(moduleRoot);
+    runtime.manager.install(process.env.QLTEACHER_MODULE_PACKAGE || moduleRoot);
     runtime.manager.configure('qlteacher', { source: 'fixture' });
 
     const session = await setupAdmin(runtime);
