@@ -107,7 +107,7 @@ npm test
 QL_USERNAME='账号' QL_PASSWORD='密码' npm run live
 ```
 
-冒烟脚本默认脱敏：不输出姓名、账号 ID、课程/单元名称或题干选项；失败时只显示错误类别，不显示详情。显式加 `--verbose` 才会显示课程内容和脱敏后的错误/模块 stderr。模块子进程只继承 `PATH`、`TZ` 和模块设置，不继承 `QL_USERNAME` / `QL_PASSWORD`。
+冒烟脚本默认脱敏：不输出姓名、账号 ID、课程/单元名称或题干选项；错误和模块 stderr 会先脱敏再显示，便于排查失败原因。显式加 `--verbose` 才会额外显示课程内容。模块子进程只继承 `PATH`、`TZ` 和模块设置，不继承 `QL_USERNAME` / `QL_PASSWORD`。
 
 只处理一个可自动学习的单元（会写入真实平台进度）：
 

@@ -215,9 +215,9 @@ const start = async () => {
   lines.on('line', handleLine);
   const errorLines = createInterface({ input: child.stderr });
   errorLines.on('line', line => {
-    // Module stderr can contain platform diagnostics. Only show it in the
-    // explicit verbose mode, and still redact it.
-    if (verbose) process.stderr.write(`[module] ${redact(line)}\n`);
+    // The module writes diagnostics, not course content. Keep them visible for
+    // troubleshooting, but redact credentials/tokens/ids first.
+    process.stderr.write(`[module] ${redact(line)}\n`);
   });
 };
 
@@ -352,11 +352,7 @@ const main = async () => {
 
 main()
   .catch(error => {
-    if (verbose) {
-      process.stderr.write(`${error.code ? `[${error.code}] ` : ''}${redact(error.message)}\n`);
-    } else {
-      process.stderr.write(`${error.code ? `[${error.code}] ` : ''}冒烟测试失败；详情已隐藏，使用 --verbose 查看脱敏后的错误。\n`);
-    }
+    process.stderr.write(`${error.code ? `[${error.code}] ` : ''}${redact(error.message)}\n`);
     process.exitCode = 1;
   })
   .finally(() => {

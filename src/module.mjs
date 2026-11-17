@@ -416,8 +416,59 @@ export class QLTeacherModule {
     const speed = speedFactor(options);
     const trial = operation === 'trial';
     const limit = Math.floor(clamp(options.limit_seconds ?? 60, 1, 180));
-    const target = trial ? Math.min(required || current + limit, current + limit) : required;
+    const requestedTarget = trial ? Math.min(required, current + limit) : required;
+    // QLTeacher rejects duration writes at exactly the study-time threshold. The
+    // player sends -1 for completion instead, and trial must stop before that
+    // threshold so it can never accidentally finish the platform unit.
+    const target = trial
+      ? Math.max(current, Math.min(requestedTarget, required - 1))
+      : requestedTarget;
     const verifyAttempts = Math.max(0, Math.floor(Number(checkpoint.verify_attempts) || 0));
+
+    const finish = async lastCurrent => {
+      if (verifyAttempts >= this.settings.study_verify_attempts) {
+        return {
+          status: 'needs_human',
+          reason: required > 0
+            ? '学习进度已保存，但平台尚未确认完成，请在官方页面核对后继续'
+            : '平台没有提供学习时长，且完成请求未获确认，请到官方页面核对',
+          checkpoint: {
+            ...checkpoint,
+            seconds: lastCurrent,
+            execution_id: executionId,
+            verify_attempts: verifyAttempts,
+          },
+        };
+      }
+      const response = await this.client.saveProgress(session, state.info, state, type, -1);
+      const refreshed = await this.client.getActivity(session, course, activity.id);
+      if (refreshed.finished) {
+        return {
+          status: 'completed',
+          evidence: { platform_confirmed: true, watched_seconds: Math.max(lastCurrent, required) },
+          checkpoint: {
+            ...checkpoint,
+            seconds: Math.max(lastCurrent, required),
+            execution_id: executionId,
+            verify_attempts: 0,
+          },
+        };
+      }
+      return {
+        status: 'in_progress',
+        progress: { watched_seconds: lastCurrent },
+        detail: '正在回读平台完成状态',
+        wait_ms: 2000,
+        checkpoint: {
+          ...checkpoint,
+          seconds: lastCurrent,
+          execution_id: executionId,
+          save_after: (await this.client.now()) + 2,
+          verify_attempts: verifyAttempts + 1,
+          last_status: response?.actStatus ?? null,
+        },
+      };
+    };
 
     if (required <= 0) {
       if (trial) {
@@ -427,36 +478,7 @@ export class QLTeacherModule {
           checkpoint: { ...checkpoint, seconds: current, execution_id: executionId },
         };
       }
-      if (verifyAttempts >= this.settings.study_verify_attempts) {
-        return {
-          status: 'needs_human',
-          reason: '平台没有提供学习时长，且完成请求未获确认，请到官方页面核对',
-          checkpoint,
-        };
-      }
-      const response = await this.client.saveProgress(session, state.info, state, type, -1);
-      const refreshed = await this.client.getActivity(session, course, activity.id);
-      if (refreshed.finished) {
-        return {
-          status: 'completed',
-          evidence: { platform_confirmed: true },
-          checkpoint: { ...checkpoint, seconds: current, execution_id: executionId },
-        };
-      }
-      return {
-        status: 'in_progress',
-        progress: { watched_seconds: current },
-        detail: '正在等待平台确认完成状态',
-        wait_ms: 2000,
-        checkpoint: {
-          ...checkpoint,
-          seconds: current,
-          execution_id: executionId,
-          save_after: (await this.client.now()) + 2,
-          verify_attempts: verifyAttempts + 1,
-          last_status: response?.actStatus ?? null,
-        },
-      };
+      return finish(current);
     }
 
     const nextChunk = Math.min(this.settings.chunk_seconds, Math.max(1, target - current));
@@ -473,46 +495,7 @@ export class QLTeacherModule {
           checkpoint: { ...checkpoint, seconds: current },
         };
       }
-      if (verifyAttempts >= this.settings.study_verify_attempts) {
-        return {
-          status: 'needs_human',
-          reason: '学习进度已保存，但平台尚未确认完成，请在官方页面核对后继续',
-          checkpoint: {
-            ...checkpoint,
-            seconds: current,
-            execution_id: executionId,
-            verify_attempts: verifyAttempts,
-          },
-        };
-      }
-      const response = await this.client.saveProgress(session, state.info, state, type, -1);
-      const refreshed = await this.client.getActivity(session, course, activity.id);
-      if (refreshed.finished) {
-        return {
-          status: 'completed',
-          evidence: { platform_confirmed: true, watched_seconds: current },
-          checkpoint: {
-            ...checkpoint,
-            seconds: current,
-            execution_id: executionId,
-            verify_attempts: 0,
-          },
-        };
-      }
-      return {
-        status: 'in_progress',
-        progress: { watched_seconds: current },
-        detail: '正在回读平台完成状态',
-        wait_ms: 2000,
-        checkpoint: {
-          ...checkpoint,
-          seconds: current,
-          execution_id: executionId,
-          save_after: (await this.client.now()) + 2,
-          verify_attempts: verifyAttempts + 1,
-          last_status: response?.actStatus ?? null,
-        },
-      };
+      return finish(current);
     }
 
     const now = await this.client.now();
@@ -545,9 +528,10 @@ export class QLTeacherModule {
     }
 
     const chunk = Math.min(this.settings.chunk_seconds, Math.max(1, target - current));
-    const offset = Math.min(target, current + chunk);
-    const finalTrim = offset >= target;
-    const saveOffset = finalTrim ? target : offset;
+    if (!trial && current + chunk >= target) {
+      return finish(current);
+    }
+    const saveOffset = Math.min(target, current + chunk);
     const response = await this.client.saveProgress(session, state.info, state, type, saveOffset);
     if (trial && saveOffset >= target) {
       return {
@@ -561,8 +545,7 @@ export class QLTeacherModule {
         },
       };
     }
-    const shouldVerify = saveOffset >= target || Number(response?.actStatus) === 1;
-    if (shouldVerify) {
+    if (Number(response?.actStatus) === 1) {
       const refreshed = await this.client.getActivity(session, course, activity.id);
       if (refreshed.finished) {
         return {

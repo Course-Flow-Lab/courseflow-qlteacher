@@ -342,15 +342,25 @@ function makeHandler(platform) {
     const videoMatch = /^\/api\/learning\/ct-1\/duration\/video\/[^/]+\/[^/]+\/(-?\d+)$/.exec(url.pathname);
     if (videoMatch) {
       const offset = Number(videoMatch[1]);
-      platform.videoProgress = offset < 0 ? platform.videoProgress : Math.max(platform.videoProgress, offset);
-      if (offset < 0) platform.videoFinished = true;
+      if (offset >= 120) return json({ code: 400, msg: '学习进度不能等于完成阈值', data: null });
+      if (offset < 0) {
+        platform.videoProgress = 120;
+        platform.videoFinished = true;
+      } else {
+        platform.videoProgress = Math.max(platform.videoProgress, offset);
+      }
       return envelope({ actStatus: offset < 0 ? 1 : 0 });
     }
     const docMatch = /^\/api\/learning\/ct-1\/duration\/doc\/[^/]+\/[^/]+\/(-?\d+)$/.exec(url.pathname);
     if (docMatch) {
       const offset = Number(docMatch[1]);
-      platform.docProgress = offset < 0 ? platform.docProgress : Math.max(platform.docProgress, offset);
-      if (offset < 0 || platform.docProgress >= 60) platform.docFinished = true;
+      if (offset >= 60) return json({ code: 400, msg: '学习进度不能等于完成阈值', data: null });
+      if (offset < 0) {
+        platform.docProgress = 60;
+        platform.docFinished = true;
+      } else {
+        platform.docProgress = Math.max(platform.docProgress, offset);
+      }
       return envelope({ actStatus: platform.docFinished ? 1 : 0 });
     }
     const resourceMatch = /^\/api\/learning\/ct-1\/duration\/resource\/resource-1\/([^/]+)$/.exec(url.pathname);
@@ -545,17 +555,14 @@ test('video study waits, saves offsets and confirms completion by readback', asy
 
     h.advance(30);
     result = await h.call('study.step', { session, course, unit, checkpoint: result.checkpoint, options });
-    assert.equal(result.status, 'in_progress');
-    assert.equal(platform.videoProgress, 120);
-
-    h.advance(1);
-    result = await h.call('study.step', { session, course, unit, checkpoint: result.checkpoint, options });
     assert.equal(result.status, 'completed');
     assert.equal(result.evidence.platform_confirmed, true);
+    assert.equal(platform.videoProgress, 120);
+    assert.equal(platform.videoFinished, true);
     const offsets = h.fetchCalls
       .filter(call => call.method === 'PUT' && call.url.includes('/duration/video/video-1/'))
       .map(call => Number(call.url.match(/\/(-?\d+)(?:\?|$)/)?.[1]));
-    assert.deepEqual(offsets, [90, 120, -1]);
+    assert.deepEqual(offsets, [90, -1]);
   } finally {
     await h.close();
   }

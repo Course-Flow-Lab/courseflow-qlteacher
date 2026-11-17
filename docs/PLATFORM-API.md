@@ -244,6 +244,8 @@ PUT .../duration/resource/<activity id>/<resource item id>
 
 `seconds = -1` 表示请求完成。响应通常包含 `actStatus`：`0` 未完成、`1` 已完成。模块不会只信 `actStatus`，会重新 `GET activity` 确认。
 
+完成时不要把 `seconds` 写到等于 `ext.studyTime`：QLTeacher 会拒绝位于完成阈值的普通进度写入。播放器和参考脚本都是在最后一个低于阈值的进度之后发送 `-1`。`trial` 模式最多写到 `studyTime - 1`，避免误完成平台单元。
+
 资源活动没有时长参数：播放器在同一资源条目首次点击时调用一次 `duration/resource`，并在本地记录 `durationContent[itemId]`。模块按顺序打开每个条目，再回读完成状态。
 
 ## 课程测验
