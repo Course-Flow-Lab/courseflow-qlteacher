@@ -87,6 +87,10 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 
 弹题只影响本地播放进度，不会向平台单独提交答案。
 
+### FastDFS 题干与选项
+
+QLTeacher 的一些题目和选项只返回 FastDFS 路径。模块会根据题目的 `ext.titleType` 和路径形态，通过 `downloadres.qlteacher.com` 读取正文。题目为 FastDFS 时，所有选项都会按播放器的行为取正文。读取失败会暂停任务，不会把 `.txt` 路径交给模型。
+
 ## 暂不支持
 
 以下功能明确不在本版本范围内，遇到时会暂停或跳过，不会伪造成功：

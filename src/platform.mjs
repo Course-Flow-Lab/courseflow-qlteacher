@@ -121,6 +121,11 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function looksLikeFastdfsPath(value) {
+  const text = String(value ?? '').trim();
+  return /^\/?(?:(?:\d{4}|group\d+)\/)?M\d{2}\/\d{2}\/\d{2}\/[A-Za-z0-9_.-]+\.(?:txt|html?|json|xml)$/i.test(text);
+}
+
 function asList(value) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') return Object.values(value);
@@ -842,13 +847,15 @@ export class QLTeacherClient {
     const itemType = String(raw?.itemType ?? '').toLowerCase();
     if (itemType === 'section' || type === 'section') return null;
 
+    const questionFastdfs = String(raw?.ext?.titleType ?? '').toLowerCase() === 'fastdfs';
     let title = String(raw?.title ?? raw?.text ?? '');
     let titleHtml = title;
-    if (String(raw?.ext?.titleType ?? '').toLowerCase() === 'fastdfs') {
+    if (questionFastdfs || looksLikeFastdfsPath(title)) {
       try {
         titleHtml = await this.getText(session, title);
-      } catch {
-        titleHtml = title;
+      } catch (error) {
+        if (error instanceof ModuleError && ['platform_login_expired', 'platform_verification_required', 'task_cancelled', 'quiet_hours'].includes(error.code)) throw error;
+        throw new ModuleError('platform_unavailable', '题目正文读取失败，请稍后重试；不会把资源路径交给模型');
       }
     }
     title = htmlToText(titleHtml);
@@ -861,14 +868,19 @@ export class QLTeacherClient {
     for (const option of optionsRaw) {
       let optionTitle = String(option?.title ?? option?.text ?? option?.name ?? option?.content ?? '');
       let optionHtml = optionTitle;
-      if (String(option?.ext?.titleType ?? '').toLowerCase() === 'fastdfs') {
+      const optionFastdfs = String(option?.ext?.titleType ?? '').toLowerCase() === 'fastdfs';
+      if (questionFastdfs || optionFastdfs || looksLikeFastdfsPath(optionTitle)) {
         try {
           optionHtml = await this.getText(session, optionTitle);
-        } catch {
-          optionHtml = optionTitle;
+        } catch (error) {
+          if (error instanceof ModuleError && ['platform_login_expired', 'platform_verification_required', 'task_cancelled', 'quiet_hours'].includes(error.code)) throw error;
+          throw new ModuleError('platform_unavailable', '题目选项读取失败，请稍后重试；不会把资源路径交给模型');
         }
       }
       optionTitle = htmlToText(optionHtml);
+      if (!optionTitle) {
+        throw protocolChanged('题目选项内容为空，无法可靠读取；请稍后重试或使用官方页面');
+      }
       for (const image of htmlImages(optionHtml, isAllowedHost)) {
         if (!images.includes(image)) images.push(image);
       }
@@ -911,7 +923,8 @@ export class QLTeacherClient {
     }
 
     let explanation = allowCorrect ? htmlToText(raw?.answerDesc ?? raw?.explanation ?? '') : '';
-    if (allowCorrect && !explanation && raw?.answerDesc && String(raw?.ext?.answerDescType ?? '').toLowerCase() === 'fastdfs') {
+    if (allowCorrect && !explanation && raw?.answerDesc
+      && (String(raw?.ext?.answerDescType ?? '').toLowerCase() === 'fastdfs' || looksLikeFastdfsPath(raw.answerDesc))) {
       try {
         explanation = htmlToText(await this.getText(session, String(raw.answerDesc)));
       } catch {

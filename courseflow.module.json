@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "qlteacher",
   "name": "山东省教师教育网",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "moduleApi": 1,
   "engines": {
     "framework": ">=0.1.13 <0.2.0"

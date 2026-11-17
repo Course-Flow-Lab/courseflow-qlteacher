@@ -349,7 +349,7 @@ Content-Type: application/json
 - `Question.kind` 只使用已验证的 `single`/`multiple`/`judge`；其他题型标为 `unsupported`。
 - 判断题公共选项固定为 `true`/`false`，与 Courseflow 的题库格式一致。
 - 题干和选项经 HTML 清洗，图片从 `<img src>` 提取并限制在 `*.qlteacher.com`。
-- FastDFS 题干/选项通过 `downloadres.qlteacher.com` 读取原始 HTML。
+- FastDFS 题干/选项通过 `downloadres.qlteacher.com` 读取原始 HTML。题目 `ext.titleType === "fastdfs"` 时，播放器会读取题干和**每个选项**的正文；选项自身不一定带 `ext.titleType`。模块同时识别 `YYYY/M00/.../file.txt` 或 `group1/M00/...` 路径。读取失败会暂停任务，绝不把资源路径交给模型。
 - 平台没有草稿接口，所以 `exam.write` 的 `draft` 阶段只返回本地 `done` 且 `draft_supported:false`。
 
 ## 参考

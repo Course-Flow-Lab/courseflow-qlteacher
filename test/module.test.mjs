@@ -7,11 +7,20 @@ import {
   json,
   jwt,
   startHarness,
+  text,
 } from './harness.mjs';
 
 const keyPair = createKeyPair();
 const password = `test-only-${randomBytes(12).toString('hex')}`;
 const account = { sub: '10001', name: '测试教师' };
+const FASTDFS_TITLE = '2015/M00/01/76/CgTitle.txt';
+const FASTDFS_OPTION_A = '2015/M00/01/76/CgOptionA.txt';
+const FASTDFS_OPTION_B = '2015/M00/01/77/CgOptionB.txt';
+const FASTDFS_TEXT = new Map([
+  [FASTDFS_TITLE, '<p>1 + 1 = ?</p>'],
+  [FASTDFS_OPTION_A, '<p>1</p>'],
+  [FASTDFS_OPTION_B, '<p>2</p>'],
+]);
 
 function makePlatform(overrides = {}) {
   return {
@@ -151,10 +160,11 @@ function examItems() {
       id: 'q1',
       type: 'single',
       itemType: 'question',
-      title: '1 + 1 = ?',
+      title: FASTDFS_TITLE,
+      ext: { titleType: 'fastdfs' },
       options: [
-        { id: 'a', title: '1' },
-        { id: 'b', title: '2' },
+        { id: 'a', title: FASTDFS_OPTION_A },
+        { id: 'b', title: FASTDFS_OPTION_B },
       ],
     },
     {
@@ -368,6 +378,11 @@ function makeHandler(platform) {
       platform.resourceIndex += 1;
       if (platform.resourceIndex >= 2) platform.resourceFinished = true;
       return envelope({ actStatus: platform.resourceFinished ? 1 : 0 });
+    }
+    if (url.hostname === 'downloadres.qlteacher.com') {
+      const path = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+      const body = FASTDFS_TEXT.get(path);
+      return body === undefined ? text('', 404, 'text/plain') : text(body);
     }
     if (url.hostname === 'player.qlteacher.com' && url.pathname === '/api/learning/ct-1/test') {
       const body = JSON.parse(request.body || '{}');
@@ -738,6 +753,9 @@ test('exam opens, drafts locally, submits real platform answers and reads back c
     assert.equal(opened.ready, true);
     assert.equal(opened.attempt.questions.length, 3);
     assert.deepEqual(opened.attempt.questions.map(q => q.kind), ['single', 'multiple', 'judge']);
+    assert.equal(opened.attempt.questions[0].text, '1 + 1 = ?');
+    assert.deepEqual(opened.attempt.questions[0].options.map(o => o.text), ['1', '2']);
+    assert.equal(opened.attempt.questions[0].options.some(o => o.text.includes('M00/')), false);
     assert.deepEqual(opened.attempt.questions[2].options.map(o => o.id), ['true', 'false']);
 
     const attemptId = opened.attempt.id;
