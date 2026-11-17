@@ -514,7 +514,8 @@ test('catalog maps lessons, chapters, activity kinds and exam selectability', as
     assert.equal(byId.get('video-1').kind, 'video');
     assert.equal(byId.get('doc-1').kind, 'document');
     assert.equal(byId.get('exam-1').kind, 'empty');
-    assert.equal(byId.get('exam-1').selectable, false);
+    assert.equal(byId.get('exam-1').selectable, true);
+    assert.match(byId.get('exam-1').selectable_note, /自动作答/);
     assert.equal(byId.get('link-1').selectable, false);
     assert.equal(byId.get('extra-1').selectable, false);
     assert.equal(byId.get('video-1').chapter_name, '第一章');
@@ -770,6 +771,102 @@ test('exam opens, drafts locally, submits real platform answers and reads back c
     assert.deepEqual(readback.review.questions[2].correct_answer, ['false']);
     assert.equal(h.bankCalls.filter(call => call.method === 'cw.question_bank.confirm').length >= 2, true);
     assert.equal(h.bankCalls.filter(call => call.method === 'cw.question_bank.record').length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a course-exam unit in study asks the framework for answers, submits and reads back', async () => {
+  const platform = makePlatform();
+  const h = await startHarness({ settings: { project_id: 'cz2026' }, fetch: makeHandler(platform) });
+  try {
+    const session = await login(h);
+    const { courses } = await h.call('catalog.courses', { session });
+    const course = courses[0];
+    const { units } = await h.call('catalog.units', { session, course });
+    const exam = units.find(item => item.id === 'exam-1');
+    assert.equal(exam.selectable, true);
+    const options = { operation: 'study', execution_id: 'task/exam-study' };
+    const needsAi = await h.call('study.step', {
+      session, course, unit: exam, checkpoint: null, options,
+    });
+    assert.equal(needsAi.status, 'needs_ai');
+    assert.equal(needsAi.questions.length, 3);
+    const completed = await h.call('study.step', {
+      session,
+      course,
+      unit: exam,
+      checkpoint: needsAi.checkpoint,
+      options: {
+        ...options,
+        interaction_answers: {
+          q1: ['b'],
+          q2: ['a', 'c'],
+          q3: ['true'],
+        },
+      },
+    });
+    assert.equal(completed.status, 'completed');
+    assert.equal(completed.evidence.platform_confirmed, true);
+    assert.equal(platform.examFinished, true);
+    assert.equal(handlerSubmitCount(h), 1);
+  } finally {
+    await h.close();
+  }
+
+  function handlerSubmitCount(harness) {
+    return harness.fetchCalls.filter(call => call.method === 'POST' && call.url.endsWith('/test')).length;
+  }
+});
+
+test('fixture source autocompletes units and exam with no network writes', async () => {
+  const h = await startHarness({
+    settings: { source: 'fixture' },
+    fetch: () => { throw new Error('fixture source must not call cw.net.fetch'); },
+  });
+  try {
+    const begin = await h.call('auth.begin', { method: 'password', session: 'ch_fixture' });
+    assert.equal(begin.challenge.kind, 'password');
+    const submitted = await h.call('auth.submit', {
+      challenge: 'ch_fixture',
+      session: 'ch_fixture',
+      fields: { username: 'fixture', password: 'fixture' },
+    });
+    assert.equal(submitted.state, 'waiting');
+    assert.equal((await h.call('auth.poll', { challenge: 'ch_fixture', session: 'ch_fixture' })).state, 'connected');
+    const identity = await h.call('auth.complete', { challenge: 'ch_fixture', session: 's_fixture' });
+    assert.equal(identity.account_raw, 'fixture-qlteacher-user');
+
+    const { courses } = await h.call('catalog.courses', { session: 's_fixture' });
+    assert.equal(courses.length, 2);
+    const course = courses[0];
+    const { units } = await h.call('catalog.units', { session: 's_fixture', course });
+    assert.equal(units.length, 3);
+    const video = units.find(unit => unit.id === 'fixture-video');
+    const exam = units.find(unit => unit.id === 'fixture-exam');
+    assert.equal(exam.selectable, true);
+    const options = { operation: 'study', execution_id: 'fixture/1' };
+    const videoResult = await h.call('study.step', {
+      session: 's_fixture', course, unit: video, checkpoint: null, options,
+    });
+    assert.equal(videoResult.status, 'completed');
+    assert.equal(videoResult.evidence.fixture, true);
+
+    const examNeedsAi = await h.call('study.step', {
+      session: 's_fixture', course, unit: exam, checkpoint: null, options,
+    });
+    assert.equal(examNeedsAi.status, 'needs_ai');
+    const examDone = await h.call('study.step', {
+      session: 's_fixture',
+      course,
+      unit: exam,
+      checkpoint: examNeedsAi.checkpoint,
+      options: { ...options, interaction_answers: { 'fixture-q1': ['A'] } },
+    });
+    assert.equal(examDone.status, 'completed');
+    const { papers } = await h.call('catalog.papers', { session: 's_fixture', course });
+    assert.equal(papers[0].done, true);
+    assert.equal(h.fetchCalls.length, 0);
   } finally {
     await h.close();
   }

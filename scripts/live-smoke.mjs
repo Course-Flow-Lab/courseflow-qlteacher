@@ -301,7 +301,7 @@ const main = async () => {
 
   if (has('--study-one')) {
     const unit = units.find(item => item.selectable && item.state !== 'completed' && item.kind === 'video')
-      || units.find(item => item.selectable && item.state !== 'completed');
+      || units.find(item => item.selectable && item.state !== 'completed' && item.kind !== 'empty');
     if (!unit) {
       process.stdout.write('\n没有需要学习且可自动处理的单元。\n');
       return;

@@ -6,6 +6,7 @@ import {
   unsupported,
 } from './errors.mjs';
 import { LoginFailure, QLTeacherClient, normalizeSettings } from './platform.mjs';
+import { QLTeacherFixture } from './fixture.mjs';
 
 const SUPPORTED_STUDY_TYPES = new Set(['video', 'teletext', 'txt', 'doc', 'link']);
 
@@ -67,20 +68,32 @@ function interactionAnswer(options, questionId) {
   return [];
 }
 
+function validPublicAnswer(question, values) {
+  if (!Array.isArray(values) || !values.length) return false;
+  if (question.kind === 'unsupported') return false;
+  if (question.kind === 'single') return values.length === 1 && question.options.some(option => option.id === values[0]);
+  if (question.kind === 'multiple') return values.length > 0 && values.every(value => question.options.some(option => option.id === value));
+  if (question.kind === 'judge') return values.length === 1 && ['true', 'false'].includes(values[0]);
+  return values.every(value => typeof value === 'string' && value.trim());
+}
+
 export class QLTeacherModule {
   constructor({ host, manifest, settings }) {
     this.host = host;
     this.manifest = manifest;
     this.settings = normalizeSettings(settings);
     this.client = new QLTeacherClient({ host, settings: this.settings });
+    this.fixture = this.settings.source === 'fixture'
+      ? new QLTeacherFixture({ host, settings: this.settings })
+      : null;
     this.challenges = new Map();
   }
 
   async dispatch(method, params) {
     const input = params && typeof params === 'object' ? params : {};
+    if (method === 'platform.describe') return this.describe();
+    if (this.fixture) return this.fixture.dispatch(method, input);
     switch (method) {
-      case 'platform.describe':
-        return this.describe();
       case 'auth.begin':
         return this.authBegin(input);
       case 'auth.submit':
@@ -270,11 +283,14 @@ export class QLTeacherModule {
       return this.reviewStep(state, unit, checkpoint, options);
     }
     if (type === 'exam') {
-      return {
-        status: 'blocked',
-        reason: '该单元是课程测验，请在「课程测验」页签中完成',
-        checkpoint: params.checkpoint ?? null,
-      };
+      if (this.settings.auto_finish_exams === false) {
+        return {
+          status: 'blocked',
+          reason: '课程测验自动完成已关闭，请在「课程测验」页签中完成',
+          checkpoint: params.checkpoint ?? null,
+        };
+      }
+      return this.studyExamStep(session, course, state, checkpoint, options);
     }
     if (type === 'homework' || type === 'assignment') {
       return {
@@ -294,6 +310,142 @@ export class QLTeacherModule {
       };
     }
     return this.timedStep(session, course, state, unit, checkpoint, options, type, operation);
+  }
+
+  async studyExamReadback(session, course, attempt, checkpoint) {
+    const readbacks = Math.max(0, Math.floor(Number(checkpoint.exam_readbacks) || 0));
+    if (readbacks >= 6) {
+      return {
+        status: 'needs_human',
+        reason: '课程测验已提交，但平台尚未确认结果，请稍后回读或到官方页面核对',
+        checkpoint: { ...checkpoint, exam_attempt_id: attempt.id, exam_readbacks: readbacks },
+      };
+    }
+    try {
+      const result = await this.examReadback({ session, course, attempt_id: attempt.id });
+      if (result.confirmed && result.attempt_id === attempt.id) {
+        return {
+          status: 'completed',
+          evidence: {
+            platform_confirmed: true,
+            ...(result.score == null ? {} : { score: result.score }),
+          },
+          checkpoint: { ...checkpoint, exam_attempt_id: attempt.id, exam_readbacks: 0 },
+        };
+      }
+    } catch (error) {
+      if (error instanceof ModuleError && ['platform_login_expired', 'platform_verification_required', 'task_cancelled', 'quiet_hours'].includes(error.code)) {
+        throw error;
+      }
+      if (error instanceof ModuleError && error.code !== 'platform_unavailable') {
+        return {
+          status: 'needs_human',
+          reason: `课程测验回读失败：${error.message}`,
+          checkpoint: { ...checkpoint, exam_attempt_id: attempt.id, exam_readbacks: readbacks },
+        };
+      }
+    }
+    return {
+      status: 'in_progress',
+      detail: '正在回读课程测验提交结果',
+      wait_ms: 1500,
+      checkpoint: {
+        ...checkpoint,
+        exam_attempt_id: attempt.id,
+        exam_readbacks: readbacks + 1,
+      },
+    };
+  }
+
+  async studyExamStep(session, course, state, checkpoint, options) {
+    const paperId = String(state.activity.id);
+    const attemptId = `${String(course.id)}:${paperId}`;
+    const previousSubmit = await this.client.loadSubmit(session, attemptId);
+    let attempt;
+    if (previousSubmit && ['pending', 'unknown', 'submitted'].includes(previousSubmit.state)) {
+      const stored = await this.client.loadAttempt(session, attemptId);
+      if (!stored?.questions?.length) {
+        return {
+          status: 'needs_human',
+          reason: '课程测验存在待核对的交卷请求，但作答快照缺失，请到官方页面核对',
+          checkpoint: { ...checkpoint, exam_attempt_id: attemptId },
+        };
+      }
+      attempt = {
+        id: attemptId,
+        paper_id: paperId,
+        name: String(state.activity?.title ?? '课程测验'),
+        questions: stored.questions,
+        expires_at: null,
+      };
+      return this.studyExamReadback(session, course, attempt, checkpoint);
+    }
+
+    let opened;
+    try {
+      opened = await this.client.openExam(session, course, paperId);
+    } catch (error) {
+      if (error instanceof ModuleError && error.code === 'no_questions') {
+        return {
+          status: 'needs_human',
+          reason: '课程测验没有可读取的题目，请在官方页面核对',
+          checkpoint,
+        };
+      }
+      throw error;
+    }
+    attempt = opened.attempt;
+    const unsupportedQuestion = attempt.questions.find(question => question.kind === 'unsupported');
+    if (unsupportedQuestion) {
+      return {
+        status: 'needs_human',
+        reason: '课程测验包含暂不支持的题型，请在官方页面完成',
+        checkpoint: { ...checkpoint, exam_attempt_id: attempt.id },
+      };
+    }
+
+    const answers = {};
+    const missing = [];
+    for (const question of attempt.questions) {
+      const fromInteraction = interactionAnswer(options, question.id);
+      const candidate = fromInteraction.length
+        ? fromInteraction
+        : question.answer?.length
+          ? question.answer
+          : question.correct_answer?.length
+            ? question.correct_answer
+            : [];
+      if (validPublicAnswer(question, candidate)) answers[question.id] = candidate;
+      else missing.push(question);
+    }
+    if (missing.length) {
+      return {
+        status: 'needs_ai',
+        questions: missing,
+        reason: '课程测验需要作答（使用工作台模型）',
+        checkpoint: { ...checkpoint, exam_attempt_id: attempt.id },
+      };
+    }
+
+    try {
+      await this.examWrite({
+        session,
+        course,
+        attempt_id: attempt.id,
+        answers,
+        phase: 'submit',
+      });
+    } catch (error) {
+      if (error instanceof ModuleError && error.code === 'platform_rejected' && /已记录/.test(error.message)) {
+        return this.studyExamReadback(session, course, attempt, checkpoint);
+      }
+      return {
+        status: 'unknown',
+        reason: `课程测验交卷结果未知：${error.message}；不会自动重交`,
+        checkpoint: { ...checkpoint, exam_attempt_id: attempt.id, exam_readbacks: 0 },
+      };
+    }
+    return this.studyExamReadback(session, course, attempt, checkpoint);
   }
 
   async reviewStep(state, unit, checkpoint, options) {

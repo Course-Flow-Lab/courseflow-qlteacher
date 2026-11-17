@@ -8,8 +8,11 @@ let settings = {};
 try {
   settings = JSON.parse(process.env.CF_MODULE_SETTINGS || '{}');
   if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('settings must be an object');
-} catch {
-  process.stderr.write('QLTeacher 模块设置必须是 JSON 对象\n');
+  if (settings.source !== undefined && settings.source !== null && !['live', 'fixture'].includes(settings.source)) {
+    throw new Error('source must be live or fixture');
+  }
+} catch (error) {
+  process.stderr.write(`QLTeacher 模块设置无效：${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(2);
 }
 

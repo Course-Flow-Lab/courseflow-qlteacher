@@ -1,11 +1,12 @@
 {
   "name": "courseflow-qlteacher",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Courseflow platform module for 山东省教师教育网 / QLTeacher",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "live": "node scripts/live-smoke.mjs"
+    "live": "node scripts/live-smoke.mjs",
+    "test:fixture": "node --test test/framework-integration.test.mjs"
   }
 }

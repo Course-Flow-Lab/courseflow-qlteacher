@@ -66,12 +66,14 @@ export function normalizeSettings(raw) {
     return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
   };
   return {
+    source: source.source === 'fixture' ? 'fixture' : 'live',
     project_id: projectId,
     project_ids: [...new Set(projectIds)],
     chunk_seconds: number(source.chunk_seconds, 60, 10, 60),
     course_cache_seconds: number(source.course_cache_seconds, 900, 60, 3600),
     request_timeout_ms: number(source.request_timeout_ms, 12_000, 5_000, 25_000),
     study_verify_attempts: number(source.study_verify_attempts, 6, 2, 20),
+    auto_finish_exams: source.auto_finish_exams !== false,
   };
 }
 
@@ -739,8 +741,12 @@ export class QLTeacherClient {
       let selectable = supported && !extended;
       let note = activity?.mustLearn === 1 ? '' : (supported ? '选修内容' : '');
       if (exam) {
-        selectable = false;
-        note = '课程测验，请在「课程测验」中完成';
+        selectable = this.settings.auto_finish_exams !== false && !extended;
+        note = selectable
+          ? '课程测验，自动作答（使用工作台模型）'
+          : extended
+            ? '扩展资源，不计入课程学习'
+            : '课程测验，请在「课程测验」中完成';
       } else if (extended) {
         selectable = false;
         note = '扩展资源，不计入课程学习';

@@ -15,11 +15,15 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 | 自动学习 | 视频 / 图文 / 文档 / 链接按真实时间推进，支持框架的 `speedup`（最高 1.5 倍） |
 | 资源活动 | 逐个打开资源条目并回读完成状态 |
 | 视频弹题 | 平台下发正确答案时直接使用；没有答案时返回 `needs_ai`，交给工作台模型或人工补答 |
-| 课程测验 | `catalog.papers` / `exam.open` / `exam.write` / `exam.readback`，先回读平台确认再标记完成 |
+| 课程测验自动完成 | 学习任务中的测验通过 `needs_ai` 使用框架模型作答，随后交卷并回读确认 |
+| 独立测验任务 | `catalog.papers` / `exam.open` / `exam.write` / `exam.readback`，支持工作台的自动提交选项 |
+| 离线 fixture | `source: fixture` 时不访问网络，可完整测试课程和测验自动完成 |
 | 题库记忆 | 交卷后把平台判定为正确的答案写入框架题库；开卷时读取已确认答案自动填充 |
 | 执行记录 | 通过框架通用任务事件显示，模块不另建页面 |
 
-工作台中的「课程学习」和「课程测验」是分开的：测验不会出现在自动学习队列里，需要在「课程测验」页签选择后执行。
+默认 `auto_finish_exams: true` 时，课程测验会出现在「课程学习」的可选单元中。学习任务遇到未作答测验时返回 `needs_ai`，框架使用用户选择的默认模型生成答案，然后模块交卷并回读确认。也可以在「课程测验」页签单独创建作答任务并勾选自动提交。
+
+模型调用由框架任务执行器完成（包括模型选择、图片读取和答案格式校验），模块不直接调用 `cw.ai.generate`，因此清单仍声明 `ai: false`。
 
 ## 设置
 
@@ -27,23 +31,27 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 
 ```json
 {
+  "source": "live",
   "project_id": "cz2026",
   "project_ids": ["cz2026"],
   "chunk_seconds": 60,
   "course_cache_seconds": 900,
   "request_timeout_ms": 12000,
-  "study_verify_attempts": 6
+  "study_verify_attempts": 6,
+  "auto_finish_exams": true
 }
 ```
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
+| `source` | `live` | `live` 使用真实平台；`fixture` 使用离线样例且不发出任何平台请求 |
 | `project_id` | `cz2026` | 课程列表使用的项目编号，来自 URL `/project/<project_id>/lesson/learn` |
 | `project_ids` | `[]` | 可选，额外合并的项目；`project_id` 会自动加入 |
 | `chunk_seconds` | `60` | 每次落盘的学习秒数，10–60；等待时间由 1x/1.5x 决定 |
 | `course_cache_seconds` | `900` | 播放器课程令牌缓存时间 |
 | `request_timeout_ms` | `12000` | 单次平台请求预算，5000–25000 |
 | `study_verify_attempts` | `6` | 完成写入后回读未确认时的重试次数，超过后转人工 |
+| `auto_finish_exams` | `true` | 把课程测验加入学习任务；设为 `false` 时测验只在「课程测验」页签处理 |
 
 例如要同时处理两个研修项目：
 
@@ -68,7 +76,8 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 - 学习步骤使用平台播放器的 `duration/video|doc|txt|link` 接口。首次步骤先等待一个学习块，随后每块落盘一次；暂停期间不会计入学习时间。
 - `speedup` 只会缩短等待时间，保存的课程秒数仍是真实学习秒数，最多 1.5 倍。
 - `trial`（短时试跑）只推进指定秒数，不会把课程标记为平台完成。
-- 课程测验没有草稿接口，因此 `exam.write` 的 `draft` 阶段只在本地返回 `draft_supported:false`，不会发请求。只有确认交卷或勾选自动提交后才会调用平台 `POST /test`。
+- 课程测验没有草稿接口，因此 `exam.write` 的 `draft` 阶段只在本地返回 `draft_supported:false`，不会发请求。只有确认交卷、勾选自动提交，或学习任务中的自动测验流程到达提交阶段后才会调用平台 `POST /test`。
+- 学习任务中的测验会自动完成：模块返回 `needs_ai` 后由框架模型生成答案；没有可用模型时任务暂停，可在任务详情手工补答后继续。
 - 交卷前先把意图写入加密状态；请求结果未知时只允许回读，不会自动重发。
 - 回读以 `GET activity` 的平台状态为准，返回原始 `attempt_id`。确认后才写入题库和任务完成状态。
 - QLTeacher 的学习活动存在互斥（同一账号不能同时学习多个活动）。遇到 `learnMultiAct` 时任务会暂停，不会并发重试。
@@ -92,6 +101,22 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 - 二维码登录、验证码识别、短信验证码；
 - 课程测验重做（`exam.redo` 返回 `unsupported_operation`，如需重考请在官方页面操作）；
 - 平台未公开的分数、排名或学习行为统计。
+
+## 离线 fixture
+
+设置 `{"source":"fixture"}` 后，模块使用内置离线样例，不访问 QLTeacher：
+
+- 任意账号密码均可连接；
+- 提供两门离线课程，包含视频、阅读和课程测验；
+- 学习任务会无操作完成视频/阅读和测验（测验使用 fixture 公布答案，不需要模型）；
+- `catalog.papers` / `exam.*` 可用于单独测试自动交卷和回读；
+- 所有 `cw.net.fetch` 调用为零，不会产生平台写入台账。
+
+框架源码位于相邻的 `../courseflow-framework` 时，`npm test` 会运行真实框架集成测试：安装本模块、使用 fixture 账号无模型自动完成一门课程，再用假模型自动提交一份独立测验，并断言 `write_ledger` 为 0。单独克隆本模块时该测试会跳过。也可以只运行这条集成测试：
+
+```bash
+npm run test:fixture
+```
 
 ## 真实账号验收
 

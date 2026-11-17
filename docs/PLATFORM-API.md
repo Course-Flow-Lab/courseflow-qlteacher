@@ -332,6 +332,17 @@ Content-Type: application/json
 
 模块把请求意图先写入加密状态；不确定结果只回读，不重发。回读以活动 `status/finishedActs` 为确认依据，并返回原始 `attempt_id`。
 
+## 学习任务中的自动测验
+
+模块设置 `auto_finish_exams` 默认为 `true`。此时 `catalog.units` 把 `exam` 活动标记为可选择，学习任务会：
+
+1. `study.step` 打开测验并返回 `needs_ai`（只包含尚未作答的题目）；
+2. 框架模型生成答案，写入 `options.interaction_answers`；
+3. 模块调用 `exam.write` 提交，再调用 `exam.readback` 回读；
+4. 只有平台确认提交后才返回 `completed`。
+
+模型调用、图片读取和答案格式校验由框架任务执行器完成，模块只返回 `needs_ai` 题目并接收 `options.interaction_answers`，不直接调用 `cw.ai.generate`。没有模型时工作台会暂停在人工补答界面；交卷结果未知时不会自动重新提交。`exam.redo` 仍不支持。
+
 ## 公共 DTO 注意点
 
 - `Question.kind` 只使用已验证的 `single`/`multiple`/`judge`；其他题型标为 `unsupported`。
