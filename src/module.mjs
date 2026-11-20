@@ -560,15 +560,18 @@ export class QLTeacherModule {
 
   async timedStep(session, course, state, unit, checkpoint, options, type, operation) {
     const activity = state.activity;
-    const required = activityRequiredSeconds(activity, unit);
-    const current = Math.max(
-      0,
-      Math.floor(Number(state.duration) || 0),
-      Math.floor(Number(checkpoint.seconds) || 0),
-      Math.floor(Number(unit.watched_seconds) || 0),
-    );
+    const video = type === 'video';
+    const required = activityRequiredSeconds(activity, video ? undefined : unit);
+    const platformSeconds = Math.max(0, Math.floor(Number(state.duration) || 0));
+    const current = video
+      ? platformSeconds
+      : Math.max(platformSeconds, Math.floor(Number(checkpoint.seconds) || 0), Math.floor(Number(unit.watched_seconds) || 0));
     const executionId = String(options.execution_id ?? '');
-    const speed = speedFactor(options);
+    const sameExecution = checkpoint.execution_id === executionId;
+    const speed = video ? 1 : speedFactor(options);
+    const chunkLimit = video
+      ? Math.max(1, Math.floor(Math.min(this.settings.chunk_seconds, state.interval > 0 ? state.interval : 60)))
+      : this.settings.chunk_seconds;
     const trial = operation === 'trial';
     const limit = Math.floor(clamp(options.limit_seconds ?? 60, 1, 180));
     const requestedTarget = trial
@@ -598,19 +601,25 @@ export class QLTeacherModule {
           },
         };
       }
-      const response = await this.client.saveProgress(session, state.info, state, type, -1);
-      const refreshed = await this.client.getActivity(session, course, activity.id);
-      if (refreshed.finished) {
-        return {
-          status: 'completed',
-          evidence: { platform_confirmed: true, watched_seconds: Math.max(lastCurrent, required) },
-          checkpoint: {
-            ...checkpoint,
-            seconds: Math.max(lastCurrent, required),
-            execution_id: executionId,
-            verify_attempts: 0,
-          },
-        };
+      // Once a video completion write has been accepted, studyStep reads back
+      // its status on subsequent calls. Don't submit another completion write.
+      let lastStatus = checkpoint.last_status ?? null;
+      if (!video || !sameExecution || verifyAttempts === 0) {
+        const response = await this.client.saveProgress(session, state.info, state, type, -1);
+        const refreshed = await this.client.getActivity(session, course, activity.id);
+        if (refreshed.finished) {
+          return {
+            status: 'completed',
+            evidence: { platform_confirmed: true, watched_seconds: Math.max(lastCurrent, required) },
+            checkpoint: {
+              ...checkpoint,
+              seconds: Math.max(lastCurrent, required),
+              execution_id: executionId,
+              verify_attempts: 0,
+            },
+          };
+        }
+        lastStatus = response?.actStatus ?? null;
       }
       return {
         status: 'in_progress',
@@ -623,10 +632,12 @@ export class QLTeacherModule {
           execution_id: executionId,
           save_after: (await this.client.now()) + 2,
           verify_attempts: verifyAttempts + 1,
-          last_status: response?.actStatus ?? null,
+          last_status: lastStatus,
         },
       };
     };
+
+    if (video && !trial && sameExecution && verifyAttempts > 0) return finish(current);
 
     if (required <= 0) {
       if (trial) {
@@ -636,10 +647,18 @@ export class QLTeacherModule {
           checkpoint: { ...checkpoint, seconds: current, execution_id: executionId },
         };
       }
+      if (video) {
+        return {
+          status: 'needs_human',
+          reason: '平台没有提供视频所需学习时长，请在官方播放器核对',
+          checkpoint,
+        };
+      }
       return finish(current);
     }
 
-    const nextChunk = Math.min(this.settings.chunk_seconds, Math.max(1, target - current));
+    const chunkAt = seconds => Math.min(chunkLimit, Math.max(1, target - seconds));
+    const nextChunk = chunkAt(current);
     const popupTarget = Math.min(target, current + nextChunk);
     const popup = await this.popupStep(session, state, checkpoint, options, popupTarget);
     if (popup.handled && popup.result) return popup.result;
@@ -653,44 +672,63 @@ export class QLTeacherModule {
           checkpoint: { ...checkpoint, seconds: current },
         };
       }
-      return finish(current);
+      if (!video) return finish(current);
     }
 
     const now = await this.client.now();
     const saveAfter = Number(checkpoint.save_after);
-    const sameExecution = checkpoint.execution_id === executionId;
-    const initialChunk = Math.min(this.settings.chunk_seconds, Math.max(1, target - current));
-    const initialWait = Math.max(1, Math.min(60, Math.ceil(initialChunk / speed)));
-    if (!sameExecution || !Number.isFinite(saveAfter)) {
+    const waitForChunk = seconds => Math.ceil(chunkAt(seconds) / speed);
+    const saveOffset = Math.min(target, current + nextChunk);
+    const timingRetried = video && sameExecution && checkpoint.video_timing_retried === true;
+    const detail = retried => retried
+      ? `${progressText(current, required)}，正在重新核对平台计时`
+      : progressText(current, required);
+    const scheduleSave = (wait, retried = timingRetried) => {
       return {
         status: 'in_progress',
         progress: { watched_seconds: current },
-        detail: progressText(current, required),
-        wait_ms: initialWait * 1000,
+        detail: detail(retried),
+        wait_ms: wait * 1000,
         checkpoint: {
           ...checkpoint,
           seconds: current,
           execution_id: executionId,
-          save_after: now + initialWait,
+          save_after: now + wait,
+          ...(video ? { video_next_seconds: saveOffset, video_timing_retried: retried } : {}),
         },
       };
+    };
+    // A deadline only covers the offset calculated from the same platform
+    // position. Legacy checkpoints and a changed readback need a new deadline.
+    const videoPlanMatches = !video
+      || (checkpoint.seconds === current && checkpoint.video_next_seconds === saveOffset);
+    if (!sameExecution || !Number.isFinite(saveAfter) || !videoPlanMatches) {
+      return scheduleSave(waitForChunk(current));
     }
     if (now < saveAfter) {
       return {
         status: 'in_progress',
         progress: { watched_seconds: current },
-        detail: progressText(current, required),
+        detail: detail(timingRetried),
         wait_ms: Math.max(1, Math.min(60, saveAfter - now)) * 1000,
         checkpoint,
       };
     }
 
-    const chunk = Math.min(this.settings.chunk_seconds, Math.max(1, target - current));
-    if (!trial && current + chunk >= target) {
-      return finish(current);
+    const completing = !trial && current + nextChunk >= target;
+    let response;
+    try {
+      if (completing) return await finish(current);
+      response = await this.client.saveProgress(session, state.info, state, type, saveOffset);
+    } catch (error) {
+      if (!video || error.code !== 'platform_rejected' || !error.message.includes('学习时间和实际经过时间不符')) throw error;
+      this.host.notify('cw.log', {
+        level: 'warn',
+        message: `视频计时校验未通过（平台进度 ${current} 秒，${completing ? '请求完成' : `上报 ${saveOffset} 秒`}，${timingRetried ? '再次拒绝' : '重新等待并回读'}）`,
+      });
+      if (timingRetried) throw error;
+      return scheduleSave(chunkLimit, true);
     }
-    const saveOffset = Math.min(target, current + chunk);
-    const response = await this.client.saveProgress(session, state.info, state, type, saveOffset);
     if (trial && saveOffset >= target) {
       return {
         status: 'completed',
@@ -718,10 +756,8 @@ export class QLTeacherModule {
         };
       }
     }
-    const remaining = Math.max(0, target - saveOffset);
-    const nextWait = remaining <= 0
-      ? 1
-      : Math.max(1, Math.min(60, Math.ceil(Math.min(this.settings.chunk_seconds, remaining) / speed)));
+    const nextChunkAfterSave = chunkAt(saveOffset);
+    const nextWait = waitForChunk(saveOffset);
     return {
       status: 'in_progress',
       progress: { watched_seconds: saveOffset },
@@ -732,6 +768,10 @@ export class QLTeacherModule {
         seconds: saveOffset,
         execution_id: executionId,
         save_after: (await this.client.now()) + nextWait,
+        ...(video ? {
+          video_next_seconds: Math.min(target, saveOffset + nextChunkAfterSave),
+          video_timing_retried: false,
+        } : {}),
         verify_attempts: 0,
         last_status: response?.actStatus ?? null,
       },

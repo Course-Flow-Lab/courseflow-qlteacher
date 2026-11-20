@@ -280,7 +280,7 @@ function makeHandler(platform) {
         duration: platform.videoProgress,
         actToken: 'act-video',
         learnMode: 2,
-        updateDurationInterval: 60,
+        updateDurationInterval: platform.videoInterval ?? 60,
       });
     }
     if (url.hostname === 'player.qlteacher.com' && url.pathname === '/api/learning/ct-1/activity/video-popup') {
@@ -584,8 +584,8 @@ test('video study waits, saves offsets and confirms completion by readback', asy
   }
 });
 
-test('1.5x speed shortens the wait but never the content offset', async () => {
-  const platform = makePlatform();
+test('video writes follow the platform interval and keep real-time pacing with speedup enabled', async () => {
+  const platform = makePlatform({ videoInterval: 45 });
   const h = await startHarness({ settings: { project_id: 'cz2026', chunk_seconds: 60 }, fetch: makeHandler(platform) });
   try {
     const session = await login(h);
@@ -595,11 +595,119 @@ test('1.5x speed shortens the wait but never the content offset', async () => {
     const unit = units.find(item => item.id === 'video-1');
     const options = { operation: 'study', execution_id: 'task/speed', speedup: true, max_speed: 1.5 };
     let result = await h.call('study.step', { session, course, unit, checkpoint: null, options });
-    assert.equal(result.wait_ms, 40_000);
-    h.advance(40);
+    assert.equal(result.wait_ms, 45_000);
+    h.advance(30);
     result = await h.call('study.step', { session, course, unit, checkpoint: result.checkpoint, options });
-    assert.equal(platform.videoProgress, 90);
+    assert.equal(result.wait_ms, 15_000);
+    assert.equal(h.fetchCalls.some(call => call.method === 'PUT'), false);
+    h.advance(15);
+    result = await h.call('study.step', { session, course, unit, checkpoint: result.checkpoint, options });
+    assert.equal(platform.videoProgress, 75);
     assert.equal(result.status, 'in_progress');
+  } finally {
+    await h.close();
+  }
+});
+
+test('video waits again when an old checkpoint or changed platform position invalidates its write', async () => {
+  const platform = makePlatform();
+  const h = await startHarness({ fetch: makeHandler(platform) });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const params = {
+      session,
+      course,
+      unit: { id: 'video-1', duration_seconds: 120, watched_seconds: 120 },
+      options: { execution_id: 'task/resumed' },
+    };
+    let result = await h.call('study.step', {
+      ...params,
+      checkpoint: { seconds: 120, execution_id: 'task/resumed', save_after: h.clock - 1 },
+    });
+    assert.equal(result.progress.watched_seconds, 30);
+    assert.equal(result.wait_ms, 60_000);
+    assert.equal(h.fetchCalls.some(call => call.method === 'PUT'), false);
+
+    platform.videoProgress = 100;
+    h.advance(60);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.progress.watched_seconds, 100);
+    assert.equal(result.wait_ms, 20_000);
+    assert.equal(h.fetchCalls.some(call => call.method === 'PUT'), false);
+
+    h.advance(20);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.status, 'completed');
+    assert.equal(result.evidence.platform_confirmed, true);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a video timing rejection waits and retries once, then surfaces a repeated rejection', async () => {
+  const platform = makePlatform({ videoProgress: 115 });
+  const fetch = makeHandler(platform);
+  const message = '学习时间和实际经过时间不符，学习进度保存失败！如果正在观看视频，请不要向后拖动视频！';
+  const rejectedAt = [];
+  const h = await startHarness({
+    fetch: request => {
+      if (request.method === 'PUT') {
+        rejectedAt.push(h.clock);
+        return envelope(null, 400, message);
+      }
+      return fetch(request);
+    },
+  });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const params = { session, course, unit: { id: 'video-1' }, options: { execution_id: 'task/timing' } };
+    let result = await h.call('study.step', params);
+    assert.equal(result.wait_ms, 5_000);
+    h.advance(5);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.status, 'in_progress');
+    assert.equal(result.progress.watched_seconds, 115);
+    assert.equal(result.wait_ms, 60_000);
+    h.advance(59);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(rejectedAt.length, 1);
+    h.advance(1);
+    await assert.rejects(h.call('study.step', { ...params, checkpoint: result.checkpoint }), {
+      code: 'platform_rejected',
+      message,
+    });
+    assert.equal(rejectedAt.length, 2);
+    assert.equal(rejectedAt[1] - rejectedAt[0], 60);
+  } finally {
+    await h.close();
+  }
+});
+
+test('an accepted video completion is only read back while confirmation is pending', async () => {
+  const platform = makePlatform({ videoProgress: 115 });
+  const fetch = makeHandler(platform);
+  const h = await startHarness({
+    fetch: request => request.method === 'PUT' ? envelope({ actStatus: 0 }) : fetch(request),
+  });
+  try {
+    const session = await login(h);
+    const { courses: [course] } = await h.call('catalog.courses', { session });
+    const params = { session, course, unit: { id: 'video-1' }, options: { execution_id: 'task/readback' } };
+    let result = await h.call('study.step', params);
+    h.advance(5);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.status, 'in_progress');
+    h.advance(2);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.status, 'in_progress');
+    assert.equal(h.fetchCalls.filter(call => call.method === 'PUT').length, 1);
+    platform.videoFinished = true;
+    h.advance(2);
+    result = await h.call('study.step', { ...params, checkpoint: result.checkpoint });
+    assert.equal(result.status, 'completed');
+    assert.equal(h.fetchCalls.filter(call => call.method === 'PUT').length, 1);
   } finally {
     await h.close();
   }

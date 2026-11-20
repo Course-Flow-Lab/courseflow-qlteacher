@@ -4,7 +4,7 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 
 这是一个独立模块仓库，不修改 `courseflow-framework` 或 `courseflow-webui`，只实现模块 API v1。
 
-运行要求：Courseflow Framework **0.1.13 或更新的 0.1.x 版本**、Node.js **24+**。当前版本为 **0.2.3**，没有 npm 运行时依赖。
+运行要求：Courseflow Framework **0.1.13 或更新的 0.1.x 版本**、Node.js **24+**。当前版本为 **0.2.4**，没有 npm 运行时依赖。
 
 下载：[GitHub Releases](https://github.com/Course-Flow-Lab/courseflow-qlteacher/releases/latest) · [统一模块下载页](https://course-flow-lab.github.io/courseflow-docker/) · [更新记录](CHANGELOG.md)。
 
@@ -16,7 +16,7 @@ Courseflow 平台模块：山东省教师教育网 / QLTeacher（`yxjc.qlteacher
 | 登录保活 | access token 临近过期时用 refresh token 刷新；框架每 5 分钟调用一次 `auth.keepalive` |
 | 课程列表 | 读取 `project_id` / `project_ids` 下的 `lessons/my`，按学习专题展开课程 |
 | 课程目录 | 读取播放器课程结构，映射章节、视频、图文、文档、资源、链接、测验 |
-| 自动学习 | 视频 / 图文 / 文档按真实时间推进，支持框架的 `speedup`（最高 1.5 倍） |
+| 自动学习 | 视频按实际经过时间上报，图文和文档支持框架的 `speedup`（最高 1.5 倍） |
 | 资源活动 | 逐个打开资源条目并回读完成状态 |
 | 视频弹题 | 平台下发正确答案时直接使用；没有答案时返回 `needs_ai`，交给工作台模型或人工补答 |
 | 学习目录过滤 | 只保留可自动播放/推进的视频、图文、文档和可打开资源；测验、作业、扩展资源及链接不进入目录 |
@@ -88,7 +88,7 @@ npm run cli -- module add /绝对路径/courseflow-qlteacher-版本-node24-提�
 ## 学习与测验行为
 
 - 学习步骤使用平台播放器的 `duration/video|doc|txt` 接口。首次步骤先等待一个学习块，随后每块落盘一次；暂停期间不会计入学习时间。
-- `speedup` 只会缩短等待时间，保存的课程秒数仍是真实学习秒数，最多 1.5 倍。
+- 视频以上一次从平台读回的进度为准，按平台给出的上报间隔分段，始终按实际经过时间推进。若平台拒绝本次计时，模块会等待并重新核对进度后重试一次。
 - `trial`（短时试跑）只推进视频、图文或文档的指定秒数，暂停恢复后仍保留原结束位置；资源和测验不支持试跑。试跑不会发送平台完成请求。
 - 学习目录不会包含测验、作业、扩展资源、暂不支持的活动或链接；这些内容不会进入自动学习任务。
 - 课程测验没有草稿接口，因此 `exam.write` 的 `draft` 阶段只在本地返回 `draft_supported:false`，不会发请求。只有确认交卷或勾选自动提交后才会调用平台 `POST /test`。
