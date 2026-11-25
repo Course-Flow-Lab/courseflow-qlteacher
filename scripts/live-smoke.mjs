@@ -55,7 +55,7 @@ const redact = value => {
 };
 
 const state = new Map();
-const deviceFile = process.env.QL_DEVICE_FILE || path.join(os.homedir(), '.cache', 'courseflow-qlteacher-device');
+const deviceFile = process.env.QL_DEVICE_FILE || fileURLToPath(new URL('../../cache/qlteacher-device', import.meta.url));
 const readDevice = () => {
   if (process.env.QL_DEVICE_ID) return process.env.QL_DEVICE_ID;
   try { return fs.readFileSync(deviceFile, 'utf8').trim(); } catch { return ''; }
